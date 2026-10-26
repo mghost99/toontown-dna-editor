@@ -1,6 +1,6 @@
 ; Inno Setup script for the DNA Editor (Windows).  Built by installer\build_installer.ps1.
 #ifndef AppVersion
-  #define AppVersion "0.0.1"
+  #define AppVersion "0.0.2"
 #endif
 #ifndef StageDir
   #define StageDir "..\build-win\stage"

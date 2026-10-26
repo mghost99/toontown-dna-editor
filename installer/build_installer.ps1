@@ -1,6 +1,6 @@
 # Builds the editor, stages exe + Panda3D runtime, and compiles the Inno Setup installer.
 # Usage (PowerShell): installer\build_installer.ps1 [-Panda C:\Panda3D-1.11.0-x64]
-param([string]$Panda = "C:\Panda3D-1.11.0-x64", [string]$Version = "0.0.1")
+param([string]$Panda = "C:\Panda3D-1.11.0-x64", [string]$Version = "0.0.2")
 $ErrorActionPreference = "Stop"; $ProgressPreference = "SilentlyContinue"
 $root = Split-Path -Parent $PSScriptRoot
 & cmd /c "`"$root\build_windows.bat`"" ; if ($LASTEXITCODE) { throw "build failed" }
