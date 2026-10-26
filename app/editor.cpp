@@ -839,35 +839,52 @@ void Editor::frame() {
   if (showInspector_) {
   ImGui::Begin("Inspector", &showInspector_);
   if (showInspector_) {
+  ImGui::BeginChild("insp-scroll");
   dna::Item *it = selection.size() == 1 ? &doc.items[selection[0]] : nullptr;
-  if (selection.size() > 1) ImGui::TextDisabled("%d objects selected (gizmo moves the first; drag moves all)", (int)selection.size());
+  if (selection.size() > 1) ImGui::TextDisabled("%d objects selected.\nThe gizmo moves the first. A drag moves all of them.", (int)selection.size());
   else {
     dna::Xform x = it ? it->xf : dna::Xform{};
-    int r = ui::inspectorPanel(it, it ? selection[0] : -1, x);
+    ui::SignEdit sign;
+    int r = ui::inspectorPanel(it, it ? selection[0] : -1, x, &doc, &sign);
+    if (sign.commit && sign.baseline) {
+      int keep = selection[0];
+      if (doc.setSignLine(sign.baseline, sign.text)) {
+        scene.build(doc, storage_);
+        if (keep >= 0 && keep < (int)doc.items.size()) selection = {keep};
+      }
+    }
     if (r && it) {
       if (!editing_) beginEdit();
       it->xf = x; scene.syncItem(doc, selection[0]);
       if (r == 2) endEdit("Edit");
     }
   }
-  ImGui::Separator();
-  ImGui::TextDisabled("Gizmo"); ImGui::SameLine();
+  ImGui::Dummy(ImVec2(0, 8));
+  ImGui::SeparatorText("Tools");
+  ImGui::TextDisabled("Gizmo");
   int op = (int)gizmoOp;
-  ImGui::RadioButton("Q", &op, 0); ImGui::SameLine(); ImGui::RadioButton("W", &op, 1); ImGui::SameLine();
-  ImGui::RadioButton("E", &op, 2); ImGui::SameLine(); ImGui::RadioButton("R", &op, 3); gizmoOp = (render::GizmoOp)op;
-  ImGui::Checkbox("Snap (X)", &snap.on); ImGui::SameLine(); ImGui::SetNextItemWidth(80); ImGui::DragFloat("ft", &snap.move, 0.05f, 0.05f, 50, "%.2f");
-  ImGui::TextDisabled("Angle step"); for (float a : {15.f, 45.f, 90.f}) { ImGui::SameLine(); char b[16]; snprintf(b, 16, "%.0f deg", a); if (ImGui::RadioButton(b, snap.angle == a)) snap.angle = a; }
+  ImGui::RadioButton("Off", &op, 0); ImGui::SameLine();
+  ImGui::RadioButton("Move", &op, 1); ImGui::SameLine();
+  ImGui::RadioButton("Rotate", &op, 2); ImGui::SameLine();
+  ImGui::RadioButton("Scale", &op, 3); gizmoOp = (render::GizmoOp)op;
+  ImGui::Dummy(ImVec2(0, 4));
+  ImGui::Checkbox("Snap", &snap.on);
+  ImGui::TextDisabled("Move step"); ImGui::SameLine(108); ImGui::SetNextItemWidth(-1); ImGui::DragFloat("##snapft", &snap.move, 0.05f, 0.05f, 50, "%.2f ft");
+  ImGui::TextDisabled("Angle step");
+  for (float a : {15.f, 45.f, 90.f}) { ImGui::SameLine(); char b[16]; snprintf(b, 16, "%.0f deg", a); if (ImGui::RadioButton(b, snap.angle == a)) snap.angle = a; }
   if (!selection.empty()) {
-    ImGui::TextDisabled("Yaw"); ImGui::SameLine();
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::TextDisabled("Yaw");
     if (ImGui::Button("-90")) yawSelectedBy(-90, true); ImGui::SameLine();
-    if (ImGui::Button("-step ([)")) yawSelectedBy(-yawStep(), true); ImGui::SameLine();
-    if (ImGui::Button("+step (])")) yawSelectedBy(yawStep(), true); ImGui::SameLine();
-    if (ImGui::Button("+90")) yawSelectedBy(90, true); ImGui::SameLine();
-    if (ImGui::Button("Reset HPR")) { beginEdit(); for (int i : selection) { auto &x = doc.items[i].xf; x.h = x.p = x.r = 0; scene.syncItem(doc, i); } endEdit("Rotate"); }
-    if (ImGui::Button("Duplicate (Ctrl+D)")) duplicateSelected();
-    ImGui::SameLine(); if (ImGui::Button("Delete (Del)")) deleteSelected();
-    ImGui::SameLine(); if (ImGui::Button("Frame (F)")) frameSelection();
+    if (ImGui::Button("-step")) yawSelectedBy(-yawStep(), true); ImGui::SameLine();
+    if (ImGui::Button("+step")) yawSelectedBy(yawStep(), true); ImGui::SameLine();
+    if (ImGui::Button("+90")) yawSelectedBy(90, true);
+    if (ImGui::Button("Reset rotation")) { beginEdit(); for (int i : selection) { auto &xf = doc.items[i].xf; xf.h = xf.p = xf.r = 0; scene.syncItem(doc, i); } endEdit("Rotate"); }
+    if (ImGui::Button("Duplicate")) duplicateSelected();
+    ImGui::SameLine(); if (ImGui::Button("Delete")) deleteSelected();
+    ImGui::SameLine(); if (ImGui::Button("Frame")) frameSelection();
   }
+  ImGui::EndChild();
   }
   ImGui::End();
   }

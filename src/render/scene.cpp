@@ -9,6 +9,9 @@
 #include "collisionNode.h"
 #include "compress_string.h"
 #include "textNode.h"
+#include "fontPool.h"
+#include <cmath>
+#include <map>
 #include <set>
 
 namespace render {
@@ -59,6 +62,75 @@ static void applyProp(const dna::XmlNode *n, NodePath &target) {
 static bool isProp(const std::string &t) { return t == "pos" || t == "hpr" || t == "nhpr" || t == "scale" || t == "color"; }
 static bool hasEditableDesc(const dna::XmlNode *n) {
   bool f = false; dna::walk(n, [&](const dna::XmlNode *c) { if (dna::kEditable.count(c->tag)) f = true; }); return f;
+}
+
+static PT(TextFont) signFont(const std::string &code) {
+  static std::map<std::string, PT(TextFont)> cache;
+  if (auto it = cache.find(code); it != cache.end()) return it->second;
+  std::string path = "phase_3/fonts/Humanist.ttf";
+  if (code == "mickey" || code == "sign" || code == "classic") path = "phase_3/fonts/MickeyFont.bam";
+  else if (code == "fancy" || code == "TT_Comedy") path = "phase_3/fonts/Comedy.ttf";
+  // "humanist" is the building-sign face. Toontown draws it with ImpressBT, the Impact-style font.
+  else if (code == "humanist" || code == "interface" || code == "interfaceFont" || code == "impact") path = "phase_3/fonts/ImpressBT.ttf";
+  else if (code == "suit" || code == "cog") path = "phase_3/fonts/vtRemingtonPortable.ttf";
+  else if (code == "minnie" || code == "TT_Minnie") path = "phase_3/fonts/MinnieFont.ttf";
+  else {
+    auto us = code.find('_');
+    if (us != std::string::npos) {
+      std::string name = code.substr(us + 1);
+      if (!name.empty() && name.find_first_of("/\\.") == std::string::npos) path = "phase_3/fonts/" + name + ".ttf";
+    }
+  }
+  PT(TextFont) f = FontPool::load_font(path);
+  if (!f || !f->is_valid()) f = FontPool::load_font("phase_3/fonts/MickeyFont.bam");
+  cache[code] = f;
+  return f;
+}
+
+// Same layout as the game's sign typesetter: glyphs in font units, centered, then bent onto the baseline ellipse.
+static void typesetBaseline(NodePath np, const dna::XmlNode *n, const std::string &src) {
+  std::string letters;
+  for (auto &c : n->children) if (c->tag == "text") letters += dna::nodeText(c.get(), src);
+  if (letters.empty()) return;
+  float sx = 1, sz = 1;
+  for (auto &c : n->children) if (c->tag == "scale") { sx = (float)fl(c->attr("x"), 1); sz = (float)fl(c->attr("z"), 1); }
+  if (sx == 0) sx = 1;
+  if (sz == 0) sz = 1;
+  float kern = (float)fl(n->attr("kern"), 0), wiggle = (float)fl(n->attr("wiggle"), 0);
+  float stumble = (float)fl(n->attr("stumble"), 0), stomp = (float)fl(n->attr("stomp"), 0), indent = (float)fl(n->attr("indent"), 0);
+  float width = (float)fl(n->attr("width"), 0), height = (float)fl(n->attr("height"), 0);
+  std::string flags = n->attr("flags");
+  PT(TextFont) font = signFont(n->attr("code"));
+  NodePath root = np.attach_new_node("typesetter");
+  root.set_scale(1 / sx, 1, 1 / sz);
+  float x = 0;
+  for (size_t i = 0; i < letters.size(); ++i) {
+    PT(TextNode) tn = new TextNode("glyph");
+    if (font && font->is_valid()) tn->set_font(font);
+    tn->set_text(std::string(1, letters[i]));
+    if (i == 0 && flags.find('b') != std::string::npos) tn->set_text_scale(1.5f);
+    NodePath g = root.attach_new_node(tn);
+    g.set_scale(sx, 1, sz);
+    g.set_two_sided(true);
+    g.set_depth_write(false);
+    g.set_depth_offset(70);
+    if (i & 1) { g.set_pos(x + stumble, 0, stomp); g.set_r(-wiggle); }
+    else { g.set_pos(x - stumble, 0, -stomp); g.set_r(wiggle); }
+    x += tn->get_width() * sx + kern;
+  }
+  for (int i = 0; i < root.get_num_children(); ++i) { NodePath c = root.get_child(i); c.set_x(c.get_x() - x / 2); }
+  if (width != 0 && height != 0) {
+    float a = width / 2, b = height / 2;
+    for (int i = 0; i < root.get_num_children(); ++i) {
+      NodePath node = root.get_child(i);
+      float theta = node.get_x() / b + indent * float(M_PI) / 180;
+      float ex = std::sin(theta) * a, ey = (std::cos(theta) - 1) * b, dev = node.get_y();
+      float r = std::sqrt(ex * ex + ey * ey);
+      if (r > 0) { ex *= (r + dev) / r; ey *= (r + dev) / r; }
+      node.set_pos(ex, -0.05f, ey);
+      node.set_r(node, theta * 180 / float(M_PI));
+    }
+  }
 }
 
 void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, assets::Storage &st,
@@ -152,20 +224,11 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
       NodePath g = NodePath::decode_from_bam_stream(std::move(v));
       if (!g.is_empty()) { g.reparent_to(np); g.set_two_sided(true); g.set_depth_offset(60); }
     }
-    if (np.get_num_children() == 0) {   // .dna/.xml: draw the letters with a TextNode (straight line, default font)
-      std::string letters; double kern = 0; LColor col(0, 0, 0, 1);
-      for (auto &c : n->children) {
-        if (c->tag == "kern") kern = fl(c->text(src), 0);
-        if (c->tag == "color") col = LColor(fl(c->attr("r"), 0), fl(c->attr("g"), 0), fl(c->attr("b"), 0), fl(c->attr("a"), 1));
-        if (c->tag == "text") for (auto &k : c->children) if (k->tag == "letters") letters += k->text(src);
-      }
-      if (!letters.empty()) {
-        PT(TextNode) tn = new TextNode("sign_text"); tn->set_text(letters); tn->set_align(TextNode::A_center);
-        tn->set_text_color(1, 1, 1, 1); (void)col;   // the baseline colour arrives as a colour scale
-        NodePath tp = np.attach_new_node(tn); tp.set_two_sided(true); tp.set_depth_offset(60); tp.set_y(-0.05f);
-        (void)kern;
-      }
+    for (auto &c : n->children) if (c->tag == "graphic") {   // logo on the sign, e.g. the Mickey head
+      NodePath g = st.findNode(c->attr("code"));
+      if (!g.is_empty()) { NodePath gp = g.copy_to(np); gp.set_two_sided(true); gp.set_depth_offset(55); }
     }
+    if (np.get_num_children() == 0 || np.find("**/typesetter").is_empty()) typesetBaseline(np, n, src);
   } else if (t == "text_geom" || t == "text" || t == "graphic" || t == "title" || t == "texture" ||
              t == "battle_cell" || t == "suit_edge" || t == "store_suit_point" || t == "curve_point" ||
              t == "prop_list") {

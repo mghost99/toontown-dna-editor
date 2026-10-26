@@ -62,7 +62,58 @@ int Document::indexOfNode(const XmlNode *n) const {
   for (size_t i = 0; i < items.size(); i++) if (items[i].node == n) return (int)i;
   return -1;
 }
+bool Document::setSignLine(const XmlNode *baseline, const std::string &letters) {
+  if (!baseline || fmt == Format::Xml) return false;
+  auto indentAt = [&](size_t pos) {
+    size_t ls = text.rfind('\n', pos ? pos - 1 : 0);
+    ls = (ls == std::string::npos || ls >= pos) ? 0 : ls + 1;
+    size_t i = ls; while (i < text.size() && (text[i] == ' ' || text[i] == '\t')) i++;
+    return text.substr(ls, i - ls);
+  };
+  std::vector<const XmlNode *> texts;
+  for (auto &c : baseline->children) if (c->tag == "text") texts.push_back(c.get());
+  size_t s, e;
+  std::string ind;
+  if (!texts.empty()) {
+    s = texts.front()->start; e = texts.back()->end; ind = indentAt(s);
+  } else {
+    s = e = baseline->end > 0 ? baseline->end - 1 : baseline->end;
+    ind = indentAt(baseline->start) + " ";
+  }
+  std::string letterInd = ind + (ind.find('\t') != std::string::npos ? "\t" : " ");
+  std::string block;
+  for (unsigned char ch : letters) {
+    if (ch == '"') continue;
+    block += ind + "text [\n" + letterInd + "letters [ \"" + std::string(1, (char)ch) + "\" ]\n" + ind + "]\n";
+  }
+  text = text.substr(0, s) + block + text.substr(e);
+  auto old = std::move(items);
+  root = parseDnaText(text);
+  items.clear(); visgroups.clear();
+  int id = 0;
+  walk(root.get(), [&](const XmlNode *n) {
+    if (n->tag == "visgroup") visgroups.push_back(n->attr("zone"));
+    if (!kEditable.count(n->tag)) return;
+    Item it; it.origId = id++; it.kind = n->tag; it.node = n;
+    it.name = n->attr("name", n->attr("id")); it.code = n->attr("code", n->attr("type"));
+    it.width = fl(n->attr("width"), 0);
+    for (auto p = n->parent; p; p = p->parent) {
+      if (kEditable.count(p->tag)) it.nested = true;
+      if (p->tag == "visgroup" && it.visgroup.empty()) it.visgroup = p->attr("zone");
+    }
+    it.xf = it.origXf = xformOf(n);
+    items.push_back(std::move(it));
+  });
+  for (size_t i = 0; i < items.size() && i < old.size(); i++) {
+    items[i].xf = old[i].xf; items[i].origXf = old[i].origXf;
+    items[i].deleted = old[i].deleted; items[i].origId = old[i].origId;
+  }
+  textDirty = true;
+  return true;
+}
+
 bool Document::dirty() const {
+  if (textDirty) return true;
   for (auto &it : items) {
     if (it.origId < 0 && !it.deleted) return true;
     if (it.origId >= 0 && (it.deleted || it.xf != it.origXf)) return true;
@@ -238,6 +289,7 @@ bool Document::save(std::string *err, SaveStats *st, const std::string &outPath)
   if (!writeFile(tmp, data)) { if (err) *err = "cannot write " + tmp; return false; }
   fs::rename(tmp, target, ec);
   if (ec) { if (err) *err = "rename failed: " + ec.message(); return false; }
+  textDirty = false;
   return true;
 }
 

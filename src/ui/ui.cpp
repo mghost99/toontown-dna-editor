@@ -120,23 +120,104 @@ bool outlinerPanel(const dna::Document &doc, std::vector<int> &sel, OutlinerStat
   return changed;
 }
 
-int inspectorPanel(dna::Item *it, int index, dna::Xform &x) {
-  if (!it) { ImGui::TextDisabled("Nothing selected.\nClick an object in the 3D view, 2D map or Objects list."); return 0; }
-  ImGui::Text("%s", it->name.empty() ? it->code.c_str() : it->name.c_str());
-  ImGui::TextDisabled("%s  |  code %s  |  #%d%s", it->kind.c_str(), it->code.c_str(), index, it->nested ? "  |  nested" : "");
-  if (!it->visgroup.empty()) ImGui::TextDisabled("visgroup %s", it->visgroup.c_str());
-  ImGui::Separator();
-  int r = 0;
-  auto row = [&](const char *lbl, double *v, float speed) {
-    float f[3] = {(float)v[0], (float)v[1], (float)v[2]};
-    ImGui::SetNextItemWidth(-60);
-    if (ImGui::DragFloat3(lbl, f, speed, 0, 0, "%.2f")) { v[0] = f[0]; v[1] = f[1]; v[2] = f[2]; r = std::max(r, 1); }
-    if (ImGui::IsItemDeactivatedAfterEdit()) r = 2;
+static const char *signFace(const std::string &code) {
+  if (code == "humanist" || code == "interface" || code == "interfaceFont" || code == "impact") return "ImpressBT (Impact)";
+  if (code == "mickey" || code == "sign" || code == "classic") return "Mickey";
+  if (code == "fancy" || code == "TT_Comedy") return "Comedy";
+  if (code == "suit" || code == "cog") return "Remington";
+  if (code == "minnie" || code == "TT_Minnie") return "Minnie";
+  return code.empty() ? "default" : code.c_str();
+}
+
+struct SignLine { const dna::XmlNode *baseline; std::string text, font; };
+static void collectSigns(const dna::XmlNode *n, const std::string &src, std::vector<SignLine> &lines, std::vector<std::string> &logos) {
+  if (!n) return;
+  if (n->tag == "baseline") {
+    SignLine line{n, "", n->attr("code")};
+    for (auto &c : n->children) {
+      if (c->tag == "text") line.text += dna::nodeText(c.get(), src);
+      else if (c->tag == "graphic") logos.push_back(c->attr("code"));
+    }
+    if (!line.text.empty()) lines.push_back(std::move(line));
+    return;
+  }
+  for (auto &c : n->children) collectSigns(c.get(), src, lines, logos);
+}
+
+int inspectorPanel(dna::Item *it, int index, dna::Xform &x, const dna::Document *doc, SignEdit *sign) {
+  if (!it) { ImGui::TextDisabled("Nothing selected.\nClick an object in the 3D view, 2D map, or Objects list."); return 0; }
+  ImGui::SeparatorText("Object");
+  auto info = [](const char *label, const std::string &value) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("%s", label);
+    ImGui::SameLine(108);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + ImGui::GetContentRegionAvail().x);
+    ImGui::TextUnformatted(value.empty() ? "—" : value.c_str());
+    ImGui::PopTextWrapPos();
   };
-  double p[3] = {x.x, x.y, x.z}, h[3] = {x.h, x.p, x.r}, s[3] = {x.sx, x.sy, x.sz};
-  row("Pos", p, 0.1f); row("H P R", h, 0.5f); row("Scale", s, 0.01f);
-  x.x = p[0]; x.y = p[1]; x.z = p[2]; x.h = h[0]; x.p = h[1]; x.r = h[2]; x.sx = s[0]; x.sy = s[1]; x.sz = s[2];
-  if (it->kind == "flat_building") ImGui::TextDisabled("width %.1f", it->width);
+  info("Name", it->name.empty() ? it->code : it->name);
+  info("Kind", it->kind + (it->nested ? "  (nested)" : ""));
+  info("Code", it->code);
+  info("Visgroup", it->visgroup);
+  info("Index", std::to_string(index));
+  if (it->kind == "flat_building") info("Width", std::to_string((int)it->width) + " ft");
+
+  if (doc && it->node) {
+    std::vector<SignLine> lines;
+    std::vector<std::string> logos;
+    collectSigns(it->node, doc->text, lines, logos);
+    if (!lines.empty() || !logos.empty()) {
+      ImGui::Dummy(ImVec2(0, 6));
+      ImGui::SeparatorText("Sign");
+      static int draftFor = -2;
+      static std::vector<std::string> drafts;
+      if (draftFor != index || drafts.size() != lines.size()) {
+        draftFor = index; drafts.clear();
+        for (auto &ln : lines) drafts.push_back(ln.text);
+      }
+      for (size_t i = 0; i < lines.size(); i++) {
+        if (lines.size() > 1) ImGui::TextDisabled("Line %d", (int)i + 1);
+        info("Font", lines[i].font.empty() ? std::string("none") : lines[i].font);
+        info("Face", signFace(lines[i].font));
+        ImGui::TextDisabled("Text");
+        ImGui::SetNextItemWidth(-1);
+        char buf[512];
+        snprintf(buf, sizeof buf, "%s", drafts[i].c_str());
+        ImGui::PushID((int)i);
+        if (ImGui::InputText("##sign", buf, sizeof buf)) drafts[i] = buf;
+        if (sign && ImGui::IsItemDeactivatedAfterEdit() && drafts[i] != lines[i].text) {
+          sign->baseline = lines[i].baseline; sign->text = drafts[i]; sign->commit = true;
+        }
+        ImGui::PopID();
+        ImGui::Dummy(ImVec2(0, 4));
+      }
+      for (auto &logo : logos) info("Logo", logo);
+      ImGui::TextDisabled("Saved as one letter per entry.");
+    }
+  }
+
+  ImGui::Dummy(ImVec2(0, 6));
+  ImGui::SeparatorText("Transform");
+  int r = 0;
+  auto field = [&](const char *id, const char *label, double &v, float speed) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("%s", label);
+    ImGui::SameLine(108);
+    ImGui::SetNextItemWidth(-1);
+    float f = (float)v;
+    ImGui::PushID(id);
+    if (ImGui::DragFloat("##v", &f, speed, 0, 0, "%.3f")) { v = f; r = std::max(r, 1); }
+    if (ImGui::IsItemDeactivatedAfterEdit()) r = 2;
+    ImGui::PopID();
+  };
+  ImGui::TextDisabled("Position, feet");
+  field("px", "X", x.x, 0.05f); field("py", "Y", x.y, 0.05f); field("pz", "Z", x.z, 0.05f);
+  ImGui::Dummy(ImVec2(0, 4));
+  ImGui::TextDisabled("Rotation, degrees");
+  field("hh", "Heading", x.h, 0.5f); field("pp", "Pitch", x.p, 0.5f); field("rr", "Roll", x.r, 0.5f);
+  ImGui::Dummy(ImVec2(0, 4));
+  ImGui::TextDisabled("Scale");
+  field("sx", "X", x.sx, 0.01f); field("sy", "Y", x.sy, 0.01f); field("sz", "Z", x.sz, 0.01f);
   return r;
 }
 

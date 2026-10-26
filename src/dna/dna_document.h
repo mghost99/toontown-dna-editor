@@ -37,12 +37,15 @@ class Document {
   Format fmt = Format::Xml;               // format of the file on disk
   bool compressed = false;
   bool encrypted = false;                 // .pdna was password-encrypted (re-encrypted on save)
+  bool textDirty = false;                 // sign lettering edited in memory
   LoadError loadError = LoadError::None;                // .pdna zlib flag as loaded (kept on save)
   CompileStats lastCompile;               // last .pdna write
   std::unique_ptr<XmlNode> root;
   std::vector<Item> items;
   std::vector<std::string> visgroups;
   int indexOfNode(const XmlNode *n) const;     // item index for an editable element node, -1 if none
+  // Rewrites one baseline's per-letter text nodes from a single string. Reparses the file text.
+  bool setSignLine(const XmlNode *baseline, const std::string &letters);
   bool dirty() const;
   // Builds the patched text (only changed tags rewritten). Pure; does not touch disk.
   std::string buildSave(SaveStats *stats) const;

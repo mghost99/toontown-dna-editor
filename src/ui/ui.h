@@ -17,8 +17,10 @@ struct OutlinerState { char filter[128] = ""; std::string visgroup; };
 // Click selects (ctrl adds). Returns true if selection changed.
 bool outlinerPanel(const dna::Document &doc, std::vector<int> &selection, OutlinerState &st, bool *focusRequest);
 
+struct SignEdit { const dna::XmlNode *baseline = nullptr; std::string text; bool commit = false; };
 // Edits xf of the single selected item. Returns 1 while editing (live), 2 when an edit finished (commit), 0 none.
-int inspectorPanel(dna::Item *it, int index, dna::Xform &editXf);
+// Sign lines are one string here; the file still stores one letters entry per character.
+int inspectorPanel(dna::Item *it, int index, dna::Xform &editXf, const dna::Document *doc, SignEdit *sign = nullptr);
 
 void logPanel(bool *autoScroll);
 void helpPanel();
