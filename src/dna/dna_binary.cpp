@@ -29,8 +29,10 @@ static const char *kPointTypes[] = {"STREET_POINT", "FRONT_DOOR_POINT", "SIDE_DO
 // ---------------------------------------------------------------- reader
 namespace {
 struct R {
-  const std::string &d; size_t p = 0; bool bad = false;
-  explicit R(const std::string &s, size_t at) : d(s), p(at) {}
+  // old = the older compiled layout (2016-era fan-server .pdna): 1-byte string lengths, a global battle-cell
+  // table after the suit edges, and every component followed by its parent's and visgroup's names.
+  const std::string &d; size_t p = 0; bool bad = false; bool old = false;
+  explicit R(const std::string &s, size_t at, bool o = false) : d(s), p(at), old(o) {}
   bool need(size_t n) { if (p + n > d.size()) { bad = true; return false; } return true; }
   uint64_t le(int n) { if (!need(n)) return 0; uint64_t v = 0; for (int i = 0; i < n; i++) v |= (uint64_t)(uint8_t)d[p + i] << (8 * i); p += n; return v; }
   uint8_t u8() { return (uint8_t)le(1); }
@@ -38,7 +40,7 @@ struct R {
   int16_t i16() { return (int16_t)le(2); }
   int32_t i32() { return (int32_t)le(4); }
   float f32() { uint32_t u = (uint32_t)le(4); float f; memcpy(&f, &u, 4); return f; }
-  std::string str() { uint16_t n = u16(); if (!need(n)) return ""; std::string s = d.substr(p, n); p += n; return s; }
+  std::string str() { uint16_t n = old ? u8() : u16(); if (!need(n)) return ""; std::string s = d.substr(p, n); p += n; return s; }
   size_t left() const { return d.size() - p; }
 };
 
@@ -72,6 +74,7 @@ struct Dec {
     static const char *kw[] = {"", "group", "visgroup", "node", "prop", "sign", "baseline", "text", "graphic", "flat_building",
                                "wall", "windows", "cornice", "landmark_building", "anim_prop", "interactive_prop",
                                "anim_building", "door", "flat_door", "street"};
+    if (r.old) { r.str(); r.str(); }   // parent name + visgroup name (the nesting already gives both)
     if (code < 1 || code > C_STREET) { if (err) *err = "invalid component code " + std::to_string(code); r.bad = true; return false; }
     bool named = code == C_GROUP || code == C_VISGROUP || code == C_NODE || code == C_PROP || code == C_FLAT_BUILDING ||
                  code == C_LANDMARK || code == C_ANIM_PROP || code == C_INTERACTIVE_PROP || code == C_ANIM_BUILDING || code == C_STREET;
@@ -139,6 +142,7 @@ struct Dec {
 };
 }  // namespace
 
+static bool decompileWith(const std::string &data, bool old, std::string *text, std::string *err);
 bool decompilePdna(const std::string &bytes, std::string *text, std::string *err, bool *compressedOut) {
   if (bytes.size() < 7 || bytes.compare(0, 5, "PDNA\n") != 0) { if (err) *err = "not a compiled DNA file (no PDNA header)"; return false; }
   bool compressed = bytes[5] != 0;
@@ -149,7 +153,15 @@ bool decompilePdna(const std::string &bytes, std::string *text, std::string *err
     std::string raw; if (!g_inflate(data, &raw)) { if (err) *err = "zlib decompression failed"; return false; }
     data.swap(raw);
   }
-  R r(data, 0);
+  if (decompileWith(data, false, text, err)) return true;
+  std::string e2;
+  if (decompileWith(data, true, text, &e2)) return true;   // older compiled layout
+  if (err && !e2.empty()) *err += " (older layout: " + e2 + ")";
+  return false;
+}
+
+static bool decompileWith(const std::string &data, bool old, std::string *text, std::string *err) {
+  R r(data, 0, old);
   std::string o = "// Decompiled from .pdna by the DNA editor. Values are fixed point in the binary format\n"
                   "// (positions/angles/scales 0.01, colours 1/255).\n\n";
   // catalog
@@ -188,13 +200,16 @@ bool decompilePdna(const std::string &bytes, std::string *text, std::string *err
   for (auto &[root, c] : catalog) if (!used.count(c)) o += "// catalog-only code: " + root + " " + c + "\n";
   if (!o.empty() && o.back() != '\n') o += "\n";
   Dec d{r, "", 0, err};
+  int oldCells = 0;
+  if (old) { int nc = r.u16(); for (int i = 0; i < nc && !r.bad; i++) { r.u8(); r.u8(); r.i32(); r.i32(); r.i32(); oldCells++; } }
   // the component stream starts with the root group; emit its children at top level
   if (r.left()) {
-    uint8_t c = r.u8(); r.str();
+    uint8_t c = r.u8(); r.str(); if (old) { r.str(); r.str(); }
     if (c != C_GROUP) { if (err) *err = "component stream does not start with the root group"; return false; }
     while (!r.bad && d.comp()) {}
   }
   if (r.bad) { if (err && err->empty()) *err = "truncated .pdna component data"; return false; }
+  if (oldCells) o += "// " + std::to_string(oldCells) + " battle cells from the file's global table were not kept\n";
   *text = o + "\n" + d.out;
   return true;
 }
