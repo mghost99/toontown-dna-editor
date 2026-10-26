@@ -38,11 +38,14 @@ void View::setRect(const Rect &r, int W, int H) {
 void View::apply() {
   if (ortho) { cam.set_pos_hpr(target.get_x(), target.get_y(), 5000, 0, -90, 0); setRect(rect_, winW_, winH_); return; }
   float y = yaw * M_PI / 180, p = pitch * M_PI / 180;
-  LVector3 fwd(-sin(y) * cos(p) * -1, cos(y) * cos(p), sin(p));
-  fwd = LVector3(sin(y) * cos(p), cos(y) * cos(p), sin(p));
+  LVector3 fwd(sin(y) * cos(p), cos(y) * cos(p), sin(p));
   cam.set_pos(target - fwd * dist);
-  cam.look_at(target, LVector3::up());
-  lens->set_near_far(std::max(0.2f, dist * 0.002f), 20000);
+  // Past straight down/up, world +Z is behind the camera. Flip the up hint so the view can pass through the ground.
+  cam.look_at(target, std::cos(p) >= 0 ? LVector3::up() : -LVector3::up());
+  // Close in, keep the near plane tiny so the camera can pass through the street. Farther out, push it
+  // out a little so the depth buffer still has precision across a neighborhood.
+  float near = dist > 30.f ? std::min(dist * 0.001f, 2.f) : 0.05f;
+  lens->set_near_far(near, std::max(20000.f, dist * 50.f));
 }
 void View::frame(const LPoint3 &mn, const LPoint3 &mx) {
   target = (mn + mx) * 0.5f;

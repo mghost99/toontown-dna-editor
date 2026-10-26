@@ -450,9 +450,14 @@ void Editor::viewport3D() {
   if (hovered) hoveredView_ = "3D";
   ImGui::Dummy(s);
   ImGuiIO &io = ImGui::GetIO();
+  bool down = ImGui::IsMouseDown(0) || ImGui::IsMouseDown(1) || ImGui::IsMouseDown(2);
+  bool clicked = ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1) || ImGui::IsMouseClicked(2);
+  if (!down) { if (pointerView_ == 3) pointerView_ = 0; }
+  else if (clicked && hovered && pointerView_ == 0) pointerView_ = 3;
+  bool own = pointerView_ == 3;
   // gizmo first (it owns the mouse when hovered)
   bool gizmoHover = false, using_ = false;
-  if (selection.size() >= 1 && !dragging_) {
+  if (selection.size() >= 1 && !dragging_ && (own || pointerView_ == 0)) {
     int p0 = selection[0];
     bool was = editing_ && !dragging_;
     bool gChanged = false;
@@ -466,20 +471,22 @@ void Editor::viewport3D() {
       endEdit(gizmoOp == render::GizmoOp::Rotate ? "Rotate" : gizmoOp == render::GizmoOp::Scale ? "Scale" : "Move");
     }
   }
-  if (!gizmoHover && !using_) handleDrag(*v3, false, hovered);
-  // camera
-  if (hovered && io.MouseWheel != 0 && !wheelUsed_) { v3->dist *= std::pow(0.88f, io.MouseWheel); v3->dist = std::clamp(v3->dist, 2.f, 8000.f); }
-  bool pan = ImGui::IsMouseDragging(2) || (ImGui::IsMouseDragging(1) && io.KeyShift);
-  if (hovered && ImGui::IsMouseClicked(1)) orbiting_ = true;
-  if (hovered && ImGui::IsMouseClicked(2)) panning_ = true;
-  if (!ImGui::IsMouseDown(1) && !ImGui::IsMouseDown(2)) orbiting_ = panning_ = false;
-  if ((orbiting_ || panning_) && (io.MouseDelta.x || io.MouseDelta.y)) {
+  if (!gizmoHover && !using_) handleDrag(*v3, false, own || (hovered && pointerView_ == 0));
+  // camera. A drag that started here keeps going after the cursor leaves the window.
+  if ((own || (hovered && pointerView_ == 0)) && io.MouseWheel != 0 && !wheelUsed_) {
+    v3->dist *= std::pow(0.88f, io.MouseWheel);
+    if (v3->dist < 0.05f) v3->dist = 0.05f;
+  }
+  bool pan = own && (ImGui::IsMouseDown(2) || (ImGui::IsMouseDown(1) && io.KeyShift));
+  if (own && ImGui::IsMouseDown(1) && !io.KeyShift) orbiting_ = true;
+  if (!own || (!ImGui::IsMouseDown(1) && !ImGui::IsMouseDown(2))) orbiting_ = false;
+  if (own && (orbiting_ || pan) && (io.MouseDelta.x || io.MouseDelta.y)) {
     if (pan) {
       LVector3 right = scene.world.get_relative_vector(v3->cam, LVector3(1, 0, 0)), up = scene.world.get_relative_vector(v3->cam, LVector3(0, 0, 1));
       float k = v3->dist * 0.0016f;
       v3->target -= right * io.MouseDelta.x * k; v3->target += up * io.MouseDelta.y * k;
     } else if (orbiting_) {
-      v3->yaw -= io.MouseDelta.x * 0.3f; v3->pitch = std::clamp(v3->pitch - io.MouseDelta.y * 0.3f, -89.f, 89.f);
+      v3->yaw -= io.MouseDelta.x * 0.3f; v3->pitch -= io.MouseDelta.y * 0.3f;
     }
   }
   if (hovered && ImGui::IsKeyDown(ImGuiKey_MouseRight) == false) {}
@@ -510,16 +517,21 @@ void Editor::viewport2D() {
   if (hovered) hoveredView_ = "2D";
   ImGui::Dummy(s);
   ImGuiIO &io = ImGui::GetIO();
-  handleDrag(*v2, true, hovered);
-  if (hovered && io.MouseWheel != 0 && !wheelUsed_) {   // zoom around the cursor
+  bool down = ImGui::IsMouseDown(0) || ImGui::IsMouseDown(1) || ImGui::IsMouseDown(2);
+  bool clicked = ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1) || ImGui::IsMouseClicked(2);
+  if (!down) { if (pointerView_ == 2) pointerView_ = 0; }
+  else if (clicked && hovered && pointerView_ == 0) pointerView_ = 2;
+  bool own = pointerView_ == 2;
+  handleDrag(*v2, true, own || (hovered && pointerView_ == 0));
+  if ((own || (hovered && pointerView_ == 0)) && io.MouseWheel != 0 && !wheelUsed_) {   // zoom around the cursor
     LPoint3 o, before, after; LVector3 d;
     bool a = v2->ray(io.MousePos.x, io.MousePos.y, o, d) && render::rayPlaneZ(o, d, 0, before);
-    v2->span = std::clamp(v2->span * std::pow(0.85f, io.MouseWheel), 5.f, 20000.f); v2->apply();
+    v2->span *= std::pow(0.85f, io.MouseWheel);
+    if (v2->span < 0.5f) v2->span = 0.5f;
+    v2->apply();
     if (a && v2->ray(io.MousePos.x, io.MousePos.y, o, d) && render::rayPlaneZ(o, d, 0, after)) { v2->target += before - after; v2->target[2] = 0; }
   }
-  if (hovered && (ImGui::IsMouseClicked(1) || ImGui::IsMouseClicked(2))) panning_ = true;
-  if (!ImGui::IsMouseDown(1) && !ImGui::IsMouseDown(2)) panning_ = false;
-  if (panning_ && hovered && (ImGui::IsMouseDown(1) || ImGui::IsMouseDown(2))) {
+  if (own && (ImGui::IsMouseDown(1) || ImGui::IsMouseDown(2)) && (io.MouseDelta.x || io.MouseDelta.y)) {
     float k = v2->span / std::max(1.f, std::min(s.x, s.y));
     v2->target[0] -= io.MouseDelta.x * k; v2->target[1] += io.MouseDelta.y * k;
   }

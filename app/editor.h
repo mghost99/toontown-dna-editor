@@ -55,7 +55,8 @@ class Editor {
   std::vector<dna::Xform> editBefore_; std::vector<int> editIds_; bool editing_ = false;
   // drag state
   bool dragging_ = false, dragArmed_ = false; int dragView_ = 0; float dragZ_ = 0; LPoint3 dragLast_; ImVec2 pressPos_;
-  bool orbiting_ = false, panning_ = false;
+  bool orbiting_ = false;
+  int pointerView_ = 0;   // 2 or 3 while a mouse button is held; the other view ignores that drag
   bool rotDrag_ = false; float rotAccum_ = 0; std::vector<float> rotStartH_;   // Shift+left-drag yaw
   bool wheelUsed_ = false;   // wheel consumed by a drag (yaw) this frame
   char openFilter_[128] = "";
