@@ -1,0 +1,112 @@
+// Engine-free tests for the dna module: .dna parse/edit/save round trip, .xml <-> .dna conversion,
+// .pdna compile/decompile, encrypted-.pdna password flow (with a stand-in cipher). Run: dna_tests SAMPLES_DIR TMP_DIR
+#include "dna/dna_document.h"
+#include "dna/dna_formats.h"
+#include <cmath>
+#include <cstdio>
+#include <filesystem>
+
+namespace fs = std::filesystem;
+static int fails = 0, checks = 0;
+#define CHECK(c) do { checks++; if (!(c)) { fails++; printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
+
+static int findItem(const dna::Document &d, const std::string &name) {
+  for (size_t i = 0; i < d.items.size(); i++) if (d.items[i].name == name) return (int)i;
+  return -1;
+}
+static bool load(dna::Document &d, const std::string &p) { std::string e; bool ok = d.load(p, fs::path(p).parent_path().string(), &e); if (!ok) printf("  load %s: %s\n", p.c_str(), e.c_str()); return ok; }
+static bool save(dna::Document &d, const std::string &p) { std::string e; dna::SaveStats s; bool ok = d.save(&e, &s, p); if (!ok) printf("  save %s: %s\n", p.c_str(), e.c_str()); return ok; }
+
+int main(int argc, char **argv) {
+  if (argc < 3) { printf("usage: dna_tests SAMPLES_DIR TMP_DIR\n"); return 2; }
+  std::string S = argv[1], T = argv[2]; fs::create_directories(T);
+  std::string street = S + "/sample_street.dna", storage = S + "/sample_storage.dna";
+
+  // 1. parse
+  int perr = -1; std::string src = dna::readFile(street);
+  auto tree = dna::parseDnaText(src, &perr);
+  CHECK(perr == 0);
+  dna::Document d; CHECK(load(d, street));
+  CHECK(d.fmt == dna::Format::Dna);
+  CHECK(d.items.size() == 7);
+  CHECK(d.visgroups.size() == 1 && d.visgroups[0] == "9101");
+  int tree0 = findItem(d, "prop_sample_tree_DNARoot"), lamp = findItem(d, "prop_sample_lamp_DNARoot");
+  int lm = findItem(d, "tb3:toon_landmark_sample_DNARoot"), nested = findItem(d, "prop_nested_DNARoot");
+  CHECK(tree0 >= 0 && lamp >= 0 && lm >= 0 && nested >= 0);
+  CHECK(d.items[tree0].code == "prop_sample_tree" && d.items[tree0].xf.x == 5 && d.items[tree0].xf.h == 90 && d.items[tree0].xf.sx == 1.25);
+  CHECK(!d.items[nested].nested && d.items[nested].visgroup == "9101");   // under a plain node, not an editable
+  { const dna::XmlNode *t = nullptr; dna::walk(d.root.get(), [&](const dna::XmlNode *n) { if (n->tag == "title") t = n; });
+    CHECK(t && dna::nodeText(t, d.text) == "Sample Shop"); }
+  { const dna::XmlNode *t = nullptr; dna::walk(d.root.get(), [&](const dna::XmlNode *n) { if (n->tag == "text") t = n; });
+    CHECK(t && dna::nodeText(t, d.text) == "SAMPLE"); }
+
+  // 2. move + delete + add, save as .dna: comments and untouched text kept
+  d.items[tree0].xf.x = 7.5; d.items[tree0].xf.h = 180;
+  d.items[lamp].deleted = true;
+  { dna::Item a; a.kind = "prop"; a.name = "prop_added_DNARoot"; a.code = "prop_sample_lamp"; a.visgroup = "9101";
+    a.templateXml = "<prop name=\"prop_added_DNARoot\" code=\"prop_sample_lamp\">\n\t<pos x=\"0.00\" y=\"0.00\" z=\"0.00\" />\n\t<nhpr h=\"0.00\" p=\"0.00\" r=\"0.00\" />\n</prop>";
+    a.xf.x = 3; a.xf.y = 4; d.items.push_back(a); }
+  std::string edited = T + "/edited.dna";
+  CHECK(save(d, edited));
+  std::string et = dna::readFile(edited);
+  CHECK(et.find("// a lone tree; the test moves it") != std::string::npos);
+  CHECK(et.find("/* block comment") == std::string::npos);   // (that one lives in the storage sample)
+  CHECK(et.find("pos [ 7.50 10 0 ]") != std::string::npos);
+  CHECK(et.find("hpr [ 180.00 0 0 ]") != std::string::npos);
+  CHECK(et.find("prop_sample_lamp_DNARoot") == std::string::npos);
+  CHECK(et.find("prop \"prop_added_DNARoot\"") != std::string::npos);
+  CHECK(et.find("cell_id [ 0 ]") != std::string::npos);
+  dna::Document d2; CHECK(load(d2, edited));
+  CHECK(d2.items.size() == 7);
+  int t2 = findItem(d2, "prop_sample_tree_DNARoot"), a2 = findItem(d2, "prop_added_DNARoot");
+  CHECK(t2 >= 0 && std::fabs(d2.items[t2].xf.x - 7.5) < 1e-9 && d2.items[t2].xf.h == 180);
+  CHECK(a2 >= 0 && d2.items[a2].xf.x == 3 && d2.items[a2].xf.y == 4);
+  // unchanged save is byte-identical apart from the header line
+  { dna::Document d3; load(d3, street); std::string o = T + "/same.dna"; save(d3, o);
+    std::string a = dna::readFile(o); a = a.substr(a.find('\n') + 1); CHECK(a == src); }
+
+  // 3. .dna -> .xml -> .dna keeps the scene
+  { dna::Document x; load(x, street); CHECK(save(x, T + "/conv.xml"));
+    dna::Document xx; CHECK(load(xx, T + "/conv.xml")); CHECK(xx.fmt == dna::Format::Xml && xx.items.size() == 7);
+    int i = findItem(xx, "prop_sample_tree_DNARoot"); CHECK(i >= 0 && xx.items[i].xf.x == 5 && xx.items[i].xf.sx == 1.25);
+    CHECK(save(xx, T + "/conv_back.dna"));
+    dna::Document xd; CHECK(load(xd, T + "/conv_back.dna")); CHECK(xd.items.size() == 7);
+    std::string a, b; dna::compilePdna(xd.root.get(), xd.text, &a, nullptr); dna::compilePdna(x.root.get(), x.text, &b, nullptr);
+    CHECK(a == b); }   // same compiled content after xml round trip
+
+  // 4. .pdna compile / decompile / recompile is stable
+  std::string p1 = T + "/street.pdna", p2 = T + "/street2.pdna";
+  { dna::Document x; load(x, street); CHECK(save(x, p1)); }
+  { std::string b = dna::readFile(p1); CHECK(b.compare(0, 7, std::string("PDNA\n\0\n", 7)) == 0); }
+  { dna::Document x; CHECK(load(x, p1)); CHECK(x.fmt == dna::Format::Pdna && x.items.size() == 7);
+    int i = findItem(x, "prop_sample_tree_DNARoot"); CHECK(i >= 0 && x.items[i].xf.x == 5 && x.items[i].xf.h == 90);
+    x.items[i].xf.x = 9; CHECK(save(x, p2)); }
+  { dna::Document x; CHECK(load(x, p2)); int i = findItem(x, "prop_sample_tree_DNARoot"); CHECK(i >= 0 && x.items[i].xf.x == 9);
+    std::string a = T + "/street3.pdna"; x.items[i].xf.x = 5; save(x, a);
+    CHECK(dna::readFile(a) == dna::readFile(p1)); }
+
+  // 5. storage sample (models, textures, fonts) parses and compiles
+  { std::string ss; auto st = dna::parseFile(storage, &ss); int nodes = 0, tex = 0, fonts = 0;
+    dna::walk(st.get(), [&](const dna::XmlNode *n) { nodes += n->tag == "store_node"; tex += n->tag == "store_texture"; fonts += n->tag == "store_font"; });
+    CHECK(nodes == 4 && tex == 2 && fonts == 1);
+    std::string b, e; CHECK(dna::compilePdna(st.get(), ss, &b, &e));
+    std::string txt; CHECK(dna::decompilePdna(b, &txt, &e));
+    auto back = dna::parseDnaText(txt); std::string b2; dna::compilePdna(back.get(), txt, &b2, &e); CHECK(b == b2); }
+
+  // 6. encrypted .pdna flow with a stand-in cipher (the app installs Panda3D's encrypt_string/decrypt_string)
+  {
+    auto x = [](const std::string &in, const std::string &pw, std::string *out) {
+      *out = in; for (size_t i = 0; i < out->size(); i++) (*out)[i] ^= (char)(pw[i % pw.size()] + 0x5A); return true; };
+    dna::setCipher(x, x);
+    std::string plain = dna::readFile(p1), enc; x(plain, "hunter2", &enc);
+    std::string ep = T + "/enc.pdna"; dna::writeFile(ep, enc);
+    dna::setSessionPassword("");
+    dna::Document e1; std::string err; CHECK(!e1.load(ep, T, &err)); CHECK(e1.loadError == dna::LoadError::NeedPassword);
+    dna::setSessionPassword("wrong"); dna::Document e2; CHECK(!e2.load(ep, T, &err)); CHECK(e2.loadError == dna::LoadError::WrongPassword);
+    dna::setSessionPassword("hunter2"); dna::Document e3; CHECK(e3.load(ep, T, &err)); CHECK(e3.encrypted && e3.items.size() == 7);
+    CHECK(save(e3, T + "/enc2.pdna")); CHECK(dna::readFile(T + "/enc2.pdna") == enc);   // re-encrypted on save
+    dna::setSessionPassword("");
+  }
+  printf("%d/%d checks passed\n", checks - fails, checks);
+  return fails ? 1 : 0;
+}

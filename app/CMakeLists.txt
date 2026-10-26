@@ -1,0 +1,11 @@
+set(ED_SOURCES main.cpp editor.cpp)
+if(WIN32)
+  list(APPEND ED_SOURCES dna-editor.rc)
+endif()
+add_executable(dna-editor ${ED_SOURCES})
+target_include_directories(dna-editor PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(dna-editor PRIVATE ed_platform ed_ui ed_render ed_commands ed_assets ed_dna ed_core)
+if(WIN32)
+  set_target_properties(dna-editor PROPERTIES WIN32_EXECUTABLE $<CONFIG:Release>)   # no console window
+  target_link_options(dna-editor PRIVATE /ENTRY:mainCRTStartup)
+endif()

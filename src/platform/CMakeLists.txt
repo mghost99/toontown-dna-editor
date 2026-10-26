@@ -1,0 +1,5 @@
+add_library(ed_platform STATIC platform.cpp)
+target_link_libraries(ed_platform PUBLIC ed_core panda3d imgui)
+if(WIN32)
+  target_link_libraries(ed_platform PUBLIC ole32 shell32 uuid)
+endif()

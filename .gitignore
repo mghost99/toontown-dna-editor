@@ -1,0 +1,8 @@
+build/
+build-win/
+*.bak
+*.tmp
+/tmp/
+.vscode/
+.idea/
+*.exe
