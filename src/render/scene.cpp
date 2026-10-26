@@ -48,6 +48,9 @@ NodePath makeMarker(const LColor &c, float s) {
 static void applyProp(const dna::XmlNode *n, NodePath &target) {
   if (target.is_empty()) return;
   const auto &t = n->tag;
+  // A flat wall's pos/scale are the DNANode defaults. Its real place and size are the stacked
+  // height and the building width, set below. Letting pos/scale through drops every story on the ground.
+  if ((t == "pos" || t == "scale") && target.has_tag("dna_wall")) return;
   if (t == "pos") target.set_pos(fl(n->attr("x"), 0), fl(n->attr("y"), 0), fl(n->attr("z"), 0));
   else if (t == "hpr" || t == "nhpr") target.set_hpr(fl(n->attr("h"), 0), fl(n->attr("p"), 0), fl(n->attr("r"), 0));
   else if (t == "scale") target.set_scale(fl(n->attr("x"), 1), fl(n->attr("y"), 1), fl(n->attr("z"), 1));
@@ -90,14 +93,20 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
     NodePath w = st.findNode(code);
     if (w.is_empty()) { *wallH += h; return; }
     np = w.copy_to(parent);
-    np.set_scale(std::max(width, 0.01), 1, std::max(h, 0.01));
+    np.set_tag("dna_wall", "1");
+    double sy = 1, extraZ = 0;
+    for (auto &c : n->children) {
+      if (c->tag == "scale") sy = fl(c->attr("y"), 1);
+      else if (c->tag == "pos") extraZ = fl(c->attr("z"), 0);
+    }
+    np.set_scale(std::max(width, 0.01), sy == 0 ? 1 : sy, std::max(h, 0.01));
     if (code.rfind("wall_pp_cog_", 0) == 0) {   // PPCogWalls: tiled 10 ft panels instead of one stretched picture
       const double TILE = 10.0; auto ts = TextureStage::get_default();
       np.set_tex_scale(ts, width / TILE, h / TILE); np.set_tex_offset(ts, 0, fmod(*wallH, TILE) / TILE);
     } else if (code.rfind("wall_pp_bay", 0) == 0) {
       static bool once = false; if (!once) { once = true; core::info("note: Bandwidth 3D office walls (wall_pp_bay*) are shown as plain stretched walls in the editor"); }
     }
-    np.set_z(*wallH); *wallH += h;
+    np.set_z(*wallH + extraZ); *wallH += h;
   } else if (t == "windows") {
     NodePath w = st.findNode(n->attr("code")); int count = (int)fl(n->attr("count"), 0);
     if (!w.is_empty()) {
