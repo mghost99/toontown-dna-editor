@@ -7,10 +7,19 @@
 #include "textureStage.h"
 #include "depthOffsetAttrib.h"
 #include "collisionNode.h"
+#include "compress_string.h"
 #include <set>
 
 namespace render {
 
+static std::string unb64(const std::string &in) {
+  std::string o; int v = 0, b = -8;
+  for (unsigned char c : in) {
+    int d = c >= 'A' && c <= 'Z' ? c - 'A' : c >= 'a' && c <= 'z' ? c - 'a' + 26 : c >= '0' && c <= '9' ? c - '0' + 52 : c == '+' ? 62 : c == '/' ? 63 : -1;
+    if (d < 0) continue; v = (v << 6) + d; b += 6; if (b >= 0) { o += char((v >> b) & 255); b -= 8; }
+  }
+  return o;
+}
 static double fl(const std::string &s, double d) { if (s.empty()) return d; char *e; double v = strtod(s.c_str(), &e); return e == s.c_str() ? d : v; }
 
 Scene::Scene() { world = NodePath("world"); geom = world.attach_new_node("dna"); markers = world.attach_new_node("markers"); }
@@ -116,7 +125,23 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
   } else if (t == "treasure_spawn") {
     np = parent.attach_new_node("treasure_spawn");
     NodePath m = makeMarker(LColor(1.0f, 0.85f, 0.1f, 1), 1.2f); m.reparent_to(np);
-  } else if (t == "sign" || t == "baseline" || t == "text" || t == "graphic" || t == "title" || t == "texture" ||
+  } else if (t == "sign") {   // placed at the building's sign_origin; the sign's own pos/hpr/scale are relative to it
+    NodePath holder = parent.attach_new_node("sign_origin");
+    NodePath origin = parent.find("**/*sign_origin");
+    if (!origin.is_empty()) holder.set_transform(origin.get_transform(parent));
+    NodePath b = st.findNode(n->attr("code"));
+    np = b.is_empty() ? holder.attach_new_node("sign") : b.copy_to(holder);
+    np.set_depth_offset(50);
+  } else if (t == "baseline") {
+    np = parent.attach_new_node("baseline");
+    for (auto &c : n->children) if (c->tag == "text_geom") {   // older .pdna: pre-rendered text model (zlib'd BAM)
+      std::string raw = decompress_string(unb64(c->text(src)));
+      if (raw.empty()) continue;
+      vector_uchar v; v.insert(v.end(), (const unsigned char *)raw.data(), (const unsigned char *)raw.data() + raw.size());
+      NodePath g = NodePath::decode_from_bam_stream(std::move(v));
+      if (!g.is_empty()) g.reparent_to(np);
+    }
+  } else if (t == "text_geom" || t == "text" || t == "graphic" || t == "title" || t == "texture" ||
              t == "battle_cell" || t == "suit_edge" || t == "store_suit_point" || t == "curve_point" ||
              t == "prop_list") {
     return;   // gameplay data or sign text: not drawn in the editor

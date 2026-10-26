@@ -51,6 +51,14 @@ std::string num(double v, int prec) {
   if (s == "-0") s = "0";
   return s;
 }
+std::string b64(const std::string &in) {
+  static const char *A = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string o; int v = 0, b = -6;
+  for (unsigned char c : in) { v = (v << 8) + c; b += 8; while (b >= 0) { o += A[(v >> b) & 63]; b -= 6; } }
+  if (b > -6) o += A[((v << 8) >> (b + 8)) & 63];
+  while (o.size() % 4) o += '=';
+  return o;
+}
 std::string qs(const std::string &s) { return "\"" + s + "\""; }
 
 struct Dec {
@@ -109,8 +117,9 @@ struct Dec {
       }
       case C_BASELINE: {
         if (r.old) {   // older files: node + u16 length + zlib'd BAM of the pre-rendered sign text (letters not stored)
-          node(); int n = r.u16(); if (r.need(n)) r.p += n;
-          line("// sign text was stored as pre-rendered geometry (" + std::to_string(n) + " bytes); letters not recoverable");
+          node(); int n = r.u16(); std::string blob; if (r.need(n)) { blob = r.d.substr(r.p, n); r.p += n; }
+          line("// sign text was stored as pre-rendered geometry; letters not recoverable (drawn from text_geom)");
+          if (!blob.empty()) line("text_geom [ " + qs(b64(blob)) + " ]");
           break;
         }
         node(); codeColor(); std::string fl = r.str(); line("flags [ " + qs(fl) + " ]");
