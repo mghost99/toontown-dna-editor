@@ -435,12 +435,13 @@ bool Editor::handleDrag(render::View &v, bool topDown, bool hovered) {
 }
 
 void Editor::viewport3D() {
+  if (!show3D_) { v3->setActive(false); return; }
   if (ImGui::GetIO().MouseWheel == 0) wheelUsed_ = false;
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0)); ImGui::PushStyleColor(ImGuiCol_DockingEmptyBg, ImVec4(0, 0, 0, 0));
-  bool vis = ImGui::Begin("3D View", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+  bool vis = ImGui::Begin("3D View", &show3D_, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
   ImGui::PopStyleVar(); ImGui::PopStyleColor(2);
-  if (!vis && !forceViews) { v3->setActive(false); ImGui::End(); return; }
+  if (!show3D_ || (!vis && !forceViews)) { v3->setActive(false); ImGui::End(); return; }
   v3->setActive(true);
   ImVec2 p = ImGui::GetCursorScreenPos(), s = ImGui::GetContentRegionAvail();
   s.x = std::max(s.x, 8.f); s.y = std::max(s.y, 8.f);
@@ -473,20 +474,16 @@ void Editor::viewport3D() {
   }
   if (!gizmoHover && !using_) handleDrag(*v3, false, own || (hovered && pointerView_ == 0));
   // camera. A drag that started here keeps going after the cursor leaves the window.
-  // Zoom flies along the view. Shrinking the orbit distance alone stops once the camera reaches its
-  // target, which sits on the ground at the middle of an area, and pan speed died with that distance.
+  // The pivot is the camera itself. Yaw and pitch turn in place; the wheel steps a short way along the view.
+  auto viewFwd = [&]() {
+    float y = v3->yaw * float(M_PI) / 180.f, pth = v3->pitch * float(M_PI) / 180.f;
+    return LVector3(std::sin(y) * std::cos(pth), std::cos(y) * std::cos(pth), std::sin(pth));
+  };
   if ((own || (hovered && pointerView_ == 0)) && io.MouseWheel != 0 && !wheelUsed_) {
     float notches = io.MouseWheel;
-    float y = v3->yaw * float(M_PI) / 180.f, pth = v3->pitch * float(M_PI) / 180.f;
-    LVector3 fwd(std::sin(y) * std::cos(pth), std::cos(y) * std::cos(pth), std::sin(pth));
-    float step = std::max(v3->dist, 30.f) * 0.18f * std::fabs(notches);
-    if (notches > 0) {
-      v3->target += fwd * step;
-      v3->dist = std::max(8.f, v3->dist * std::pow(0.9f, notches));
-    } else {
-      v3->target -= fwd * step;
-      v3->dist *= std::pow(0.9f, notches);
-    }
+    float step = v3->dist * 0.08f * std::fabs(notches);
+    if (step < 0.4f) step = 0.4f;
+    v3->target += viewFwd() * (notches > 0 ? step : -step);
   }
   bool pan = own && (ImGui::IsMouseDown(2) || (ImGui::IsMouseDown(1) && io.KeyShift));
   if (own && ImGui::IsMouseDown(1) && !io.KeyShift) orbiting_ = true;
@@ -494,10 +491,12 @@ void Editor::viewport3D() {
   if (own && (orbiting_ || pan) && (io.MouseDelta.x || io.MouseDelta.y)) {
     if (pan) {
       LVector3 right = scene.world.get_relative_vector(v3->cam, LVector3(1, 0, 0)), up = scene.world.get_relative_vector(v3->cam, LVector3(0, 0, 1));
-      float k = std::max(v3->dist, 40.f) * 0.0022f;
+      float k = std::max(v3->dist, 12.f) * 0.0016f;
       v3->target -= right * io.MouseDelta.x * k; v3->target += up * io.MouseDelta.y * k;
     } else if (orbiting_) {
+      LPoint3 camPos = v3->target - viewFwd() * v3->dist;
       v3->yaw -= io.MouseDelta.x * 0.3f; v3->pitch -= io.MouseDelta.y * 0.3f;
+      v3->target = camPos + viewFwd() * v3->dist;
     }
   }
   if (hovered && ImGui::IsKeyDown(ImGuiKey_MouseRight) == false) {}
@@ -514,11 +513,12 @@ void Editor::viewport3D() {
 }
 
 void Editor::viewport2D() {
+  if (!showMap_) { v2->setActive(false); return; }
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0)); ImGui::PushStyleColor(ImGuiCol_DockingEmptyBg, ImVec4(0, 0, 0, 0));
-  bool vis = ImGui::Begin("2D Map", nullptr, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
+  bool vis = ImGui::Begin("2D Map", &showMap_, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
   ImGui::PopStyleVar(); ImGui::PopStyleColor(2);
-  if (!vis && !forceViews) { v2->setActive(false); ImGui::End(); return; }
+  if (!showMap_ || (!vis && !forceViews)) { v2->setActive(false); ImGui::End(); return; }
   v2->setActive(true);
   ImVec2 p = ImGui::GetCursorScreenPos(), s = ImGui::GetContentRegionAvail();
   s.x = std::max(s.x, 8.f); s.y = std::max(s.y, 8.f);
@@ -563,14 +563,13 @@ void Editor::viewport2D() {
 }
 
 void Editor::previewWindow() {
-  if (previewIdx_ < 0) { pv->setActive(false); return; }
-  bool open = true;
+  if (!showPreview_) { pv->setActive(false); return; }
   ImGui::SetNextWindowSize(ImVec2(460, 560), ImGuiCond_FirstUseEver);
   ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0));
-  bool vis = ImGui::Begin("Prop Preview", &open, ImGuiWindowFlags_NoScrollbar);
+  bool vis = ImGui::Begin("Prop Preview", &showPreview_, ImGuiWindowFlags_NoScrollbar);
   ImGui::PopStyleColor();
-  if (!open) { previewIdx_ = -1; pv->setActive(false); ImGui::End(); return; }
-  if (!vis) { pv->setActive(false); ImGui::End(); return; }
+  if (!showPreview_ || !vis) { pv->setActive(false); ImGui::End(); return; }
+  if (previewIdx_ < 0) { ImGui::TextDisabled("Pick a prop in the palette."); ImGui::End(); return; }
   auto &e = catalog[previewIdx_];
   ImGui::Text("%s", e.code.c_str());
   ImGui::TextDisabled("root %s  |  %s", e.root.c_str(), fs::path(e.storageRel).filename().string().c_str());
@@ -595,7 +594,9 @@ void Editor::previewWindow() {
 }
 
 void Editor::visgroupsPanel() {
-  ImGui::Begin("Visgroups");
+  if (!showVisgroups_) return;
+  ImGui::Begin("Visgroups", &showVisgroups_);
+  if (!showVisgroups_) { ImGui::End(); return; }
   if (doc.visgroups.empty()) ImGui::TextDisabled("No visgroups in this file.");
   if (ImGui::SmallButton("Show all")) for (auto &[k, v] : vgVisible_) { v = true; scene.setVisgroupVisible(k, true); }
   ImGui::SameLine(); if (ImGui::SmallButton("Hide all")) for (auto &[k, v] : vgVisible_) { v = false; scene.setVisgroupVisible(k, false); }
@@ -615,7 +616,9 @@ void Editor::visgroupsPanel() {
 }
 
 void Editor::statsPanel() {
-  ImGui::Begin("Timings");
+  if (!showTimings_) return;
+  ImGui::Begin("Timings", &showTimings_);
+  if (!showTimings_) { ImGui::End(); return; }
   ImGui::Text("frame %.2f ms (%.0f fps)", lastFrameMs, lastFrameMs > 0 ? 1000.0 / lastFrameMs : 0.0);
   ImGui::Separator();
   for (auto &[k, v] : core::timings()) if (k.rfind("load model", 0) != 0) ImGui::Text("%-34s %9.2f ms", k.c_str(), v);
@@ -699,6 +702,16 @@ void Editor::menuBar() {
     if (ImGui::MenuItem("Game lighting (unlit)", "L", m == render::LightMode::Game)) setLight(render::LightMode::Game);
     if (ImGui::MenuItem("Lit (sun + ambient)", nullptr, m == render::LightMode::Lit)) setLight(render::LightMode::Lit);
     if (ImGui::MenuItem("Cog mood (smog, dusk)", nullptr, m == render::LightMode::CogMood)) setLight(render::LightMode::CogMood);
+    ImGui::Separator();
+    ImGui::MenuItem("3D view", nullptr, &show3D_);
+    ImGui::MenuItem("2D map", nullptr, &showMap_);
+    ImGui::MenuItem("Palette", nullptr, &showPalette_);
+    ImGui::MenuItem("Visgroups", nullptr, &showVisgroups_);
+    ImGui::MenuItem("Inspector", nullptr, &showInspector_);
+    ImGui::MenuItem("Objects", nullptr, &showObjects_);
+    ImGui::MenuItem("Prop preview", nullptr, &showPreview_);
+    ImGui::MenuItem("Log", nullptr, &showLog_);
+    ImGui::MenuItem("Timings", nullptr, &showTimings_);
     ImGui::Separator();
     if (ImGui::MenuItem("Frame all", "Home")) frameAll();
     if (ImGui::MenuItem("Frame selection", "F")) frameSelection();
@@ -813,13 +826,19 @@ void Editor::frame() {
   viewport3D();
   viewport2D();
 
-  ImGui::Begin("Palette");
-  int clicked = ui::palettePanel(catalog, pal_, loadedCodes_);
-  if (clicked >= 0) { openPreview(clicked); ImGui::SetWindowFocus("Prop Preview"); }
-  ImGui::End();
+  if (showPalette_) {
+    ImGui::Begin("Palette", &showPalette_);
+    if (showPalette_) {
+      int clicked = ui::palettePanel(catalog, pal_, loadedCodes_);
+      if (clicked >= 0) { showPreview_ = true; openPreview(clicked); ImGui::SetWindowFocus("Prop Preview"); }
+    }
+    ImGui::End();
+  }
   previewWindow();
 
-  ImGui::Begin("Inspector");
+  if (showInspector_) {
+  ImGui::Begin("Inspector", &showInspector_);
+  if (showInspector_) {
   dna::Item *it = selection.size() == 1 ? &doc.items[selection[0]] : nullptr;
   if (selection.size() > 1) ImGui::TextDisabled("%d objects selected (gizmo moves the first; drag moves all)", (int)selection.size());
   else {
@@ -849,16 +868,22 @@ void Editor::frame() {
     ImGui::SameLine(); if (ImGui::Button("Delete (Del)")) deleteSelected();
     ImGui::SameLine(); if (ImGui::Button("Frame (F)")) frameSelection();
   }
+  }
   ImGui::End();
+  }
 
-  ImGui::Begin("Objects");
-  bool focus = false;
-  ui::outlinerPanel(doc, selection, out_, &focus);
-  if (focus) frameSelection();
-  ImGui::End();
+  if (showObjects_) {
+    ImGui::Begin("Objects", &showObjects_);
+    if (showObjects_) {
+      bool focus = false;
+      ui::outlinerPanel(doc, selection, out_, &focus);
+      if (focus) frameSelection();
+    }
+    ImGui::End();
+  }
 
   visgroupsPanel();
-  ImGui::Begin("Log"); ui::logPanel(&logAuto_); ImGui::End();
+  if (showLog_) { ImGui::Begin("Log", &showLog_); if (showLog_) ui::logPanel(&logAuto_); ImGui::End(); }
   statsPanel();
   if (showHelp_) { ImGui::Begin("Shortcuts", &showHelp_, ImGuiWindowFlags_AlwaysAutoResize); ui::helpPanel(); ImGui::End(); }
   openDialog();

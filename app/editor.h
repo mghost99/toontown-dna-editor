@@ -52,6 +52,8 @@ class Editor {
   ui::PaletteState pal_; ui::OutlinerState out_;
   bool showInputDebug_ = getenv("DNAED_INPUT_DEBUG") != nullptr; std::string hoveredView_ = "none";
   bool logAuto_ = true, showOpen_ = false, showHelp_ = false, layoutDone_ = false, showDemo_ = false;
+  bool show3D_ = true, showMap_ = true, showPalette_ = true, showVisgroups_ = true;
+  bool showInspector_ = true, showObjects_ = true, showPreview_ = true, showLog_ = true, showTimings_ = true;
   std::vector<dna::Xform> editBefore_; std::vector<int> editIds_; bool editing_ = false;
   // drag state
   bool dragging_ = false, dragArmed_ = false; int dragView_ = 0; float dragZ_ = 0; LPoint3 dragLast_; ImVec2 pressPos_;
