@@ -119,7 +119,7 @@ struct Dec {
         break;
       }
       case C_TEXT: { node(); std::string l = r.str(); line("letters [ " + qs(l) + " ]"); codeColor(); break; }
-      case C_FLAT_BUILDING: { node(); double w = r.u16() / 10.0; r.u8(); line("width [ " + num(w, 1) + " ]"); break; }
+      case C_FLAT_BUILDING: { node(); double w = r.u16() / (r.old ? 100.0 : 10.0); r.u8(); line("width [ " + num(w, r.old ? 2 : 1) + " ]"); break; }   // older files: width in 0.01
       case C_WALL: { node(); std::string c = r.str(); double h = r.i16() / 100.0; if (!c.empty()) line("code [ " + qs(c) + " ]"); line("height [ " + num(h, 2) + " ]"); color(); break; }
       case C_WINDOWS: { codeColor(); line("count [ " + std::to_string(r.u8()) + " ]"); leaf = true; break; }
       case C_CORNICE: case C_DOOR: case C_FLAT_DOOR: codeColor(); leaf = true; break;
