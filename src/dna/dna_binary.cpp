@@ -8,9 +8,11 @@
 //            suit_edges{u16: u16 start, u16 n, (u16 end, u16 zone)*n}
 //   components: u8 code + fields [+ children + 255]; windows/cornice/door/flat_door/street have no children.
 #include "dna_formats.h"
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <set>
@@ -31,8 +33,12 @@ namespace {
 struct R {
   // old = the older compiled layout (2016-era fan-server .pdna): 1-byte string lengths, a global battle-cell
   // table after the suit edges, and every component followed by its parent's and visgroup's names.
-  const std::string &d; size_t p = 0; bool bad = false; bool old = false;
-  explicit R(const std::string &s, size_t at, bool o = false) : d(s), p(at), old(o) {}
+  // wide = Corporate Clash: pos/hpr, suit points and battle cells are float64 (scale stays 0.01).
+  // merged = Clash and Toontown Stride: a baseline stores the whole sign line, then the font; landmark
+  // titles live only in the storage block table.
+  const std::string &d; size_t p = 0; bool bad = false; bool old = false; bool wide = false; bool merged = false;
+  explicit R(const std::string &s, size_t at, bool o = false, bool w = false, bool m = false)
+    : d(s), p(at), old(o), wide(w), merged(m) {}
   bool need(size_t n) { if (p + n > d.size()) { bad = true; return false; } return true; }
   uint64_t le(int n) { if (!need(n)) return 0; uint64_t v = 0; for (int i = 0; i < n; i++) v |= (uint64_t)(uint8_t)d[p + i] << (8 * i); p += n; return v; }
   uint8_t u8() { return (uint8_t)le(1); }
@@ -40,6 +46,7 @@ struct R {
   int16_t i16() { return (int16_t)le(2); }
   int32_t i32() { return (int32_t)le(4); }
   float f32() { uint32_t u = (uint32_t)le(4); float f; memcpy(&f, &u, 4); return f; }
+  double f64() { uint64_t u = le(8); double f; memcpy(&f, &u, 8); return f; }
   std::string str() { uint16_t n = old ? u8() : u16(); if (!need(n)) return ""; std::string s = d.substr(p, n); p += n; return s; }
   size_t left() const { return d.size() - p; }
 };
@@ -61,16 +68,33 @@ std::string b64(const std::string &in) {
 }
 std::string qs(const std::string &s) { return "\"" + s + "\""; }
 
+struct BlockRec { std::string title, article, type; };
+int blockIndex(const std::string &id) {   // "tb12:..." / "sz18:..." -> 12 / 18
+  auto c = id.find(':'); if (c == std::string::npos) return -1;
+  size_t i = 0; while (i < c && !std::isdigit((unsigned char)id[i])) i++;
+  if (i >= c) return -1;
+  return std::atoi(id.c_str() + i);
+}
+
 struct Dec {
   R &r; std::string out; int depth = 0; std::string *err;
+  std::map<int, BlockRec> blocks;
   std::string ind() const { return std::string(depth, '\t'); }
   void line(const std::string &s) { out += ind() + s + "\n"; }
   void color(const char *kw = "color") { double c[4]; for (auto &x : c) x = r.u8() / 255.0; line(std::string(kw) + " [ " + num(c[0], 9) + " " + num(c[1], 9) + " " + num(c[2], 9) + " " + num(c[3], 9) + " ]"); }
-  void node() {   // DNANode fields after the name
-    double v[9]; for (int i = 0; i < 6; i++) v[i] = r.i32() / 100.0; for (int i = 6; i < 9; i++) v[i] = r.i16() / 100.0;
-    line("pos [ " + num(v[0], 2) + " " + num(v[1], 2) + " " + num(v[2], 2) + " ]");
-    line("nhpr [ " + num(v[3], 2) + " " + num(v[4], 2) + " " + num(v[5], 2) + " ]");
-    if (v[6] != 1 || v[7] != 1 || v[8] != 1) line("scale [ " + num(v[6], 2) + " " + num(v[7], 2) + " " + num(v[8], 2) + " ]");
+  void node() {   // DNANode fields after the name. Clash stores pos/hpr as float64; everyone else uses 0.01 fixed point.
+    double v[9];
+    int prec = 2;
+    if (r.wide) { prec = 6; for (int i = 0; i < 6; i++) v[i] = r.f64(); }
+    else { for (int i = 0; i < 6; i++) v[i] = r.i32() / 100.0; }
+    for (int i = 6; i < 9; i++) v[i] = r.i16() / 100.0;
+    line("pos [ " + num(v[0], prec) + " " + num(v[1], prec) + " " + num(v[2], prec) + " ]");
+    line("nhpr [ " + num(v[3], prec) + " " + num(v[4], prec) + " " + num(v[5], prec) + " ]");
+    if (v[6] != 1 || v[7] != 1 || v[8] != 1) line("scale [ " + num(v[6], prec) + " " + num(v[7], prec) + " " + num(v[8], prec) + " ]");
+  }
+  void xyz(double &x, double &y, double &z) {
+    if (r.wide) { x = r.f64(); y = r.f64(); z = r.f64(); }
+    else { x = r.i32() / 100.0; y = r.i32() / 100.0; z = r.i32() / 100.0; }
   }
   void codeColor() { std::string c = r.str(); if (!c.empty()) line("code [ " + qs(c) + " ]"); color(); }
   // Returns false at the end of the parent's children (255) or on error.
@@ -97,8 +121,9 @@ struct Dec {
         if (nv) line("vis [" + vis + " ]");
         for (auto &[a, b] : edges) line("suit_edge [ " + std::to_string(a) + " " + std::to_string(b) + " ]");
         int nc = r.u16();
-        for (int i = 0; i < nc && !r.bad; i++) { int w = r.u8(), h = r.u8(); double x = r.i32() / 100.0, y = r.i32() / 100.0, z = r.i32() / 100.0;
-          line("battle_cell [ " + std::to_string(w) + " " + std::to_string(h) + " " + num(x, 2) + " " + num(y, 2) + " " + num(z, 2) + " ]"); }
+        for (int i = 0; i < nc && !r.bad; i++) { int w = r.u8(), h = r.u8(); double x, y, z; xyz(x, y, z);
+          int prec = r.wide ? 6 : 2;
+          line("battle_cell [ " + std::to_string(w) + " " + std::to_string(h) + " " + num(x, prec) + " " + num(y, prec) + " " + num(z, prec) + " ]"); }
         break;
       }
       case C_NODE: node(); break;
@@ -122,9 +147,13 @@ struct Dec {
           if (!blob.empty()) line("text_geom [ " + qs(b64(blob)) + " ]");
           break;
         }
-        node(); codeColor(); std::string fl = r.str(); line("flags [ " + qs(fl) + " ]");
+        node();
+        std::string letters;
+        if (r.merged) letters = r.str();   // the whole sign line, ahead of the font code
+        codeColor(); std::string fl = r.str(); line("flags [ " + qs(fl) + " ]");
         const char *k[] = {"indent", "kern", "wiggle", "stumble", "stomp", "width", "height"};
         for (auto kk : k) { char b[32]; snprintf(b, sizeof b, "%.9g", (double)r.f32()); line(std::string(kk) + " [ " + b + " ]"); }   // exact f32
+        if (!letters.empty()) { line("text ["); depth++; line("letters [ " + qs(letters) + " ]"); depth--; line("]"); }
         break;
       }
       case C_TEXT: { node(); std::string l = r.str(); line("letters [ " + qs(l) + " ]"); codeColor(); break; }
@@ -135,11 +164,12 @@ struct Dec {
       case C_LANDMARK: case C_ANIM_BUILDING: {
         node(); std::string c = r.str(); if (!c.empty()) line("code [ " + qs(c) + " ]");
         color();
-        std::string t = r.str(), a = r.str(), bt = r.str();
+        std::string t, a, bt;
+        if (!r.merged) { t = r.str(); a = r.str(); bt = r.str(); if (code == C_ANIM_BUILDING) { std::string an = r.str(); line("anim [ " + qs(an) + " ]"); } }
+        else if (auto it = blocks.find(blockIndex(name)); it != blocks.end()) { t = it->second.title; a = it->second.article; bt = it->second.type; }
         if (!t.empty()) line("title [ " + qs(t) + " ]");
         if (!a.empty()) line("article [ " + qs(a) + " ]");
         if (!bt.empty()) line("building_type [ " + qs(bt) + " ]");
-        if (code == C_ANIM_BUILDING) line("anim [ " + qs(r.str()) + " ]");
         break;
       }
       case C_STREET: {
@@ -156,7 +186,7 @@ struct Dec {
 };
 }  // namespace
 
-static bool decompileWith(const std::string &data, bool old, std::string *text, std::string *err);
+static bool decompileWith(const std::string &data, bool old, bool wide, bool merged, std::string *text, std::string *err);
 bool decompilePdna(const std::string &bytes, std::string *text, std::string *err, bool *compressedOut) {
   if (bytes.size() < 7 || bytes.compare(0, 5, "PDNA\n") != 0) { if (err) *err = "not a compiled DNA file (no PDNA header)"; return false; }
   bool compressed = bytes[5] != 0;
@@ -167,15 +197,19 @@ bool decompilePdna(const std::string &bytes, std::string *text, std::string *err
     std::string raw; if (!g_inflate(data, &raw)) { if (err) *err = "zlib decompression failed"; return false; }
     data.swap(raw);
   }
-  if (decompileWith(data, false, text, err)) return true;
-  std::string e2;
-  if (decompileWith(data, true, text, &e2)) return true;   // older compiled layout
-  if (err && !e2.empty()) *err += " (older layout: " + e2 + ")";
+  if (decompileWith(data, false, false, false, text, err)) return true;          // libpandadna
+  std::string eStride, eClash, eOld;
+  if (decompileWith(data, false, false, true, text, &eStride)) return true;      // Toontown Stride: sign line on the baseline
+  if (decompileWith(data, false, true, true, text, &eClash)) return true;        // Corporate Clash: float64 coordinates too
+  if (decompileWith(data, true, false, false, text, &eOld)) return true;         // older compiled layout
+  if (err && !eStride.empty()) *err += " (stride layout: " + eStride + ")";
+  if (err && !eClash.empty()) *err += " (clash layout: " + eClash + ")";
+  if (err && !eOld.empty()) *err += " (older layout: " + eOld + ")";
   return false;
 }
 
-static bool decompileWith(const std::string &data, bool old, std::string *text, std::string *err) {
-  R r(data, 0, old);
+static bool decompileWith(const std::string &data, bool old, bool wide, bool merged, std::string *text, std::string *err) {
+  R r(data, 0, old, wide, merged);
   std::string o = "// Decompiled from .pdna by the DNA editor. Values are fixed point in the binary format\n"
                   "// (positions/angles/scales 0.01, colours 1/255).\n\n";
   // catalog
@@ -200,12 +234,20 @@ static bool decompileWith(const std::string &data, bool old, std::string *text, 
     }
     for (auto &f : order) models += std::string(kinds[kind]) + " " + qs(f) + " [\n" + body[f] + "]\n";
   }
-  n = r.u16(); for (int i = 0; i < n && !r.bad; i++) { r.u8(); r.u16(); r.str(); r.str(); r.str(); }   // blocks: rebuilt from buildings
-  std::string pts;
+  std::map<int, BlockRec> blocks;
   n = r.u16();
   for (int i = 0; i < n && !r.bad; i++) {
-    int idx = r.u16(), ty = r.u8(); double x = r.i32() / 100.0, y = r.i32() / 100.0, z = r.i32() / 100.0; int lb = r.i16();
-    pts += "store_suit_point [ " + std::to_string(idx) + ", " + (ty < 5 ? kPointTypes[ty] : "STREET_POINT") + ", " + num(x, 2) + " " + num(y, 2) + " " + num(z, 2) + (lb != -1 ? ", " + std::to_string(lb) : "") + " ]\n";
+    int num = r.u8(), zone = r.u16(); std::string title = r.str(), article = r.str(), type = r.str();
+    (void)zone; blocks[num] = {title, article, type};
+  }
+  std::string pts;
+  n = r.u16();
+  int pprec = wide ? 6 : 2;
+  for (int i = 0; i < n && !r.bad; i++) {
+    int idx = r.u16(), ty = r.u8(); double x, y, z;
+    if (wide) { x = r.f64(); y = r.f64(); z = r.f64(); } else { x = r.i32() / 100.0; y = r.i32() / 100.0; z = r.i32() / 100.0; }
+    int lb = r.i16();
+    pts += "store_suit_point [ " + std::to_string(idx) + ", " + (ty < 5 ? kPointTypes[ty] : "STREET_POINT") + ", " + num(x, pprec) + " " + num(y, pprec) + " " + num(z, pprec) + (lb != -1 ? ", " + std::to_string(lb) : "") + " ]\n";
   }
   n = r.u16(); for (int i = 0; i < n && !r.bad; i++) { r.u16(); int k = r.u16(); for (int j = 0; j < k && !r.bad; j++) { r.u16(); r.u16(); } }   // edges: in visgroups
   if (r.bad) { if (err) *err = "truncated .pdna storage section"; return false; }
@@ -213,7 +255,7 @@ static bool decompileWith(const std::string &data, bool old, std::string *text, 
   // codes only in the catalog (no node/texture/font): keep them so nothing is lost
   for (auto &[root, c] : catalog) if (!used.count(c)) o += "// catalog-only code: " + root + " " + c + "\n";
   if (!o.empty() && o.back() != '\n') o += "\n";
-  Dec d{r, "", 0, err};
+  Dec d{r, "", 0, err, std::move(blocks)};
   int oldCells = 0;
   if (old) { int nc = r.u16(); for (int i = 0; i < nc && !r.bad; i++) { r.u8(); r.u8(); r.i32(); r.i32(); r.i32(); oldCells++; } }
   // the component stream starts with the root group; emit its children at top level

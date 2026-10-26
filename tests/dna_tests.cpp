@@ -3,7 +3,9 @@
 #include "dna/dna_document.h"
 #include "dna/dna_formats.h"
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 
 namespace fs = std::filesystem;
@@ -106,6 +108,44 @@ int main(int argc, char **argv) {
     dna::setSessionPassword("hunter2"); dna::Document e3; CHECK(e3.load(ep, T, &err)); CHECK(e3.encrypted && e3.items.size() == 7);
     CHECK(save(e3, T + "/enc2.pdna")); CHECK(dna::readFile(T + "/enc2.pdna") == enc);   // re-encrypted on save
     dna::setSessionPassword("");
+  }
+
+  // 7. Two compiled sign-text layouts: Stride (fixed point, the line stored on the baseline)
+  // and Corporate Clash (the same sign line, with pos/hpr as float64).
+  {
+    auto le16 = [](std::string &b, int v) { b.push_back((char)(v & 255)); b.push_back((char)((v >> 8) & 255)); };
+    auto le32 = [](std::string &b, int v) { uint32_t u = (uint32_t)v; for (int i = 0; i < 4; i++) b.push_back((char)((u >> (8 * i)) & 255)); };
+    auto str = [&](std::string &b, const char *s) { le16(b, (int)std::strlen(s)); b.append(s); };
+    auto f64 = [](std::string &b, double v) { uint64_t u; std::memcpy(&u, &v, 8); for (int i = 0; i < 8; i++) b.push_back((char)((u >> (8 * i)) & 255)); };
+    auto f32 = [](std::string &b, float v) { uint32_t u; std::memcpy(&u, &v, 4); for (int i = 0; i < 4; i++) b.push_back((char)((u >> (8 * i)) & 255)); };
+    auto color = [](std::string &b) { b.append(4, (char)255); };
+    auto storage = [&](std::string &b) { for (int i = 0; i < 9; i++) le16(b, 0); };
+    std::string body, txt, e;
+    storage(body);
+    body.push_back(1); str(body, "root");
+    body.push_back(6); str(body, "");
+    le32(body, 0); le32(body, 0); le32(body, -84); le32(body, 0); le32(body, 0); le32(body, 200);
+    le16(body, 100); le16(body, 100); le16(body, 100);
+    str(body, "HI"); str(body, "mickey"); color(body); str(body, "");
+    for (int i = 0; i < 7; i++) f32(body, 0);
+    body.push_back((char)255); body.push_back((char)255);
+    std::string bytes = std::string("PDNA\n\0\n", 7) + body;
+    CHECK(dna::decompilePdna(bytes, &txt, &e));
+    CHECK(txt.find("letters [ \"HI\" ]") != std::string::npos);
+    CHECK(txt.find("code [ \"mickey\" ]") != std::string::npos);
+    CHECK(txt.find("pos [ 0 0 -0.84 ]") != std::string::npos);
+    body.clear(); storage(body);
+    body.push_back(1); str(body, "root");
+    body.push_back(4); str(body, "npc");
+    f64(body, -120.156); f64(body, 71.977); f64(body, 0.525); f64(body, 0); f64(body, 0); f64(body, 0);
+    le16(body, 100); le16(body, 100); le16(body, 100);
+    str(body, "DCS"); color(body);
+    body.push_back((char)255); body.push_back((char)255);
+    bytes = std::string("PDNA\n\0\n", 7) + body;
+    CHECK(dna::decompilePdna(bytes, &txt, &e));
+    CHECK(txt.find("-120.156") != std::string::npos);
+    CHECK(txt.find("71.977") != std::string::npos);
+    CHECK(txt.find("code [ \"DCS\" ]") != std::string::npos);
   }
   printf("%d/%d checks passed\n", checks - fails, checks);
   return fails ? 1 : 0;

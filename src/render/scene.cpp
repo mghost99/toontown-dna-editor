@@ -8,6 +8,7 @@
 #include "depthOffsetAttrib.h"
 #include "collisionNode.h"
 #include "compress_string.h"
+#include "textNode.h"
 #include <set>
 
 namespace render {
@@ -126,8 +127,9 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
     np = parent.attach_new_node("treasure_spawn");
     NodePath m = makeMarker(LColor(1.0f, 0.85f, 0.1f, 1), 1.2f); m.reparent_to(np);
   } else if (t == "sign") {   // placed at the building's sign_origin; the sign's own pos/hpr/scale are relative to it
-    NodePath holder = parent.attach_new_node("sign_origin");
-    NodePath origin = parent.find("**/*sign_origin");
+    NodePath origin = parent.find("**/sign_origin");   // look up before adding our own node
+    if (origin.is_empty()) origin = parent.find("**/*sign_origin*");
+    NodePath holder = parent.attach_new_node("dna_sign");
     if (!origin.is_empty()) holder.set_transform(origin.get_transform(parent));
     NodePath b = st.findNode(n->attr("code"));
     np = b.is_empty() ? holder.attach_new_node("sign") : b.copy_to(holder);
@@ -139,7 +141,21 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
       if (raw.empty()) continue;
       vector_uchar v; v.insert(v.end(), (const unsigned char *)raw.data(), (const unsigned char *)raw.data() + raw.size());
       NodePath g = NodePath::decode_from_bam_stream(std::move(v));
-      if (!g.is_empty()) g.reparent_to(np);
+      if (!g.is_empty()) { g.reparent_to(np); g.set_two_sided(true); g.set_depth_offset(60); }
+    }
+    if (np.get_num_children() == 0) {   // .dna/.xml: draw the letters with a TextNode (straight line, default font)
+      std::string letters; double kern = 0; LColor col(0, 0, 0, 1);
+      for (auto &c : n->children) {
+        if (c->tag == "kern") kern = fl(c->text(src), 0);
+        if (c->tag == "color") col = LColor(fl(c->attr("r"), 0), fl(c->attr("g"), 0), fl(c->attr("b"), 0), fl(c->attr("a"), 1));
+        if (c->tag == "text") for (auto &k : c->children) if (k->tag == "letters") letters += k->text(src);
+      }
+      if (!letters.empty()) {
+        PT(TextNode) tn = new TextNode("sign_text"); tn->set_text(letters); tn->set_align(TextNode::A_center);
+        tn->set_text_color(1, 1, 1, 1); (void)col;   // the baseline colour arrives as a colour scale
+        NodePath tp = np.attach_new_node(tn); tp.set_two_sided(true); tp.set_depth_offset(60); tp.set_y(-0.05f);
+        (void)kern;
+      }
     }
   } else if (t == "text_geom" || t == "text" || t == "graphic" || t == "title" || t == "texture" ||
              t == "battle_cell" || t == "suit_edge" || t == "store_suit_point" || t == "curve_point" ||
