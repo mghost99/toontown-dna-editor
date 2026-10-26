@@ -108,6 +108,11 @@ struct Dec {
         line("width [ " + num(w, 2) + " ]"); line("height [ " + num(h, 2) + " ]"); break;
       }
       case C_BASELINE: {
+        if (r.old) {   // older files: node + u16 length + zlib'd BAM of the pre-rendered sign text (letters not stored)
+          node(); int n = r.u16(); if (r.need(n)) r.p += n;
+          line("// sign text was stored as pre-rendered geometry (" + std::to_string(n) + " bytes); letters not recoverable");
+          break;
+        }
         node(); codeColor(); std::string fl = r.str(); line("flags [ " + qs(fl) + " ]");
         const char *k[] = {"indent", "kern", "wiggle", "stumble", "stomp", "width", "height"};
         for (auto kk : k) { char b[32]; snprintf(b, sizeof b, "%.9g", (double)r.f32()); line(std::string(kk) + " [ " + b + " ]"); }   // exact f32
