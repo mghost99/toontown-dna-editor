@@ -473,9 +473,20 @@ void Editor::viewport3D() {
   }
   if (!gizmoHover && !using_) handleDrag(*v3, false, own || (hovered && pointerView_ == 0));
   // camera. A drag that started here keeps going after the cursor leaves the window.
+  // Zoom flies along the view. Shrinking the orbit distance alone stops once the camera reaches its
+  // target, which sits on the ground at the middle of an area, and pan speed died with that distance.
   if ((own || (hovered && pointerView_ == 0)) && io.MouseWheel != 0 && !wheelUsed_) {
-    v3->dist *= std::pow(0.88f, io.MouseWheel);
-    if (v3->dist < 0.05f) v3->dist = 0.05f;
+    float notches = io.MouseWheel;
+    float y = v3->yaw * float(M_PI) / 180.f, pth = v3->pitch * float(M_PI) / 180.f;
+    LVector3 fwd(std::sin(y) * std::cos(pth), std::cos(y) * std::cos(pth), std::sin(pth));
+    float step = std::max(v3->dist, 30.f) * 0.18f * std::fabs(notches);
+    if (notches > 0) {
+      v3->target += fwd * step;
+      v3->dist = std::max(8.f, v3->dist * std::pow(0.9f, notches));
+    } else {
+      v3->target -= fwd * step;
+      v3->dist *= std::pow(0.9f, notches);
+    }
   }
   bool pan = own && (ImGui::IsMouseDown(2) || (ImGui::IsMouseDown(1) && io.KeyShift));
   if (own && ImGui::IsMouseDown(1) && !io.KeyShift) orbiting_ = true;
@@ -483,7 +494,7 @@ void Editor::viewport3D() {
   if (own && (orbiting_ || pan) && (io.MouseDelta.x || io.MouseDelta.y)) {
     if (pan) {
       LVector3 right = scene.world.get_relative_vector(v3->cam, LVector3(1, 0, 0)), up = scene.world.get_relative_vector(v3->cam, LVector3(0, 0, 1));
-      float k = v3->dist * 0.0016f;
+      float k = std::max(v3->dist, 40.f) * 0.0022f;
       v3->target -= right * io.MouseDelta.x * k; v3->target += up * io.MouseDelta.y * k;
     } else if (orbiting_) {
       v3->yaw -= io.MouseDelta.x * 0.3f; v3->pitch -= io.MouseDelta.y * 0.3f;
