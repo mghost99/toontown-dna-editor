@@ -480,10 +480,10 @@ void Editor::viewport3D() {
     return LVector3(std::sin(y) * std::cos(pth), std::cos(y) * std::cos(pth), std::sin(pth));
   };
   if ((own || (hovered && pointerView_ == 0)) && io.MouseWheel != 0 && !wheelUsed_) {
-    float notches = io.MouseWheel;
-    float step = v3->dist * 0.08f * std::fabs(notches);
-    if (step < 0.4f) step = 0.4f;
-    v3->target += viewFwd() * (notches > 0 ? step : -step);
+    // One light notch is a small step. A harder flick stacks wheel units, and the curve grows slower than that stack.
+    float mag = std::pow(std::fabs(io.MouseWheel), 0.65f);
+    float step = v3->dist * 0.02f * mag;
+    v3->target += viewFwd() * (io.MouseWheel > 0 ? step : -step);
   }
   bool pan = own && (ImGui::IsMouseDown(2) || (ImGui::IsMouseDown(1) && io.KeyShift));
   if (own && ImGui::IsMouseDown(1) && !io.KeyShift) orbiting_ = true;
@@ -537,7 +537,8 @@ void Editor::viewport2D() {
   if ((own || (hovered && pointerView_ == 0)) && io.MouseWheel != 0 && !wheelUsed_) {   // zoom around the cursor
     LPoint3 o, before, after; LVector3 d;
     bool a = v2->ray(io.MousePos.x, io.MousePos.y, o, d) && render::rayPlaneZ(o, d, 0, before);
-    v2->span *= std::pow(0.85f, io.MouseWheel);
+    float mag = std::copysign(std::pow(std::fabs(io.MouseWheel), 0.65f), io.MouseWheel);
+    v2->span *= std::pow(0.97f, mag);
     if (v2->span < 0.5f) v2->span = 0.5f;
     v2->apply();
     if (a && v2->ray(io.MousePos.x, io.MousePos.y, o, d) && render::rayPlaneZ(o, d, 0, after)) { v2->target += before - after; v2->target[2] = 0; }
