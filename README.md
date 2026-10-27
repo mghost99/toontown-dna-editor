@@ -70,7 +70,7 @@ Needs Visual Studio 2022 (or Build Tools) with the C++ workload, CMake + Ninja (
 Install [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`), then in
 PowerShell:
 
-    installer\build_installer.ps1 [-Panda C:\Panda3D-1.11.0-x64] [-Version 0.0.2]
+    installer\build_installer.ps1 [-Panda C:\Panda3D-1.11.0-x64] [-Version 0.0.3]
 
 It builds the editor, stages the exe with the Panda3D runtime DLLs and the MSVC runtime, and writes
 `build-win\DNA-Editor-Setup-v<version>.exe` (`installer/dna-editor.iss`). The installer is not
