@@ -302,25 +302,35 @@ void logPanel(bool *autoScroll) {
 }
 
 void helpPanel() {
-  ImGui::TextUnformatted(
-      "Mouse (3D view)\n"
-      "  Left click        select (Ctrl = add to selection)\n"
-      "  Left drag object  free drag at its current height\n"
-      "  Shift+Left drag   rotate (yaw) the selection; wheel while dragging = yaw one step\n"
-      "  Right drag        orbit      Middle drag / Shift+Right  pan\n"
-      "  Wheel             zoom       F  frame selection\n"
-      "Mouse (2D map)\n"
-      "  Left drag object  move      Right/Middle drag  pan   Wheel  zoom\n"
-      "Keys\n"
-      "  W / E / R         translate / rotate (H/P/R rings; E again = back) / scale\n"
-      "  [ / ]             yaw -/+ one step (15 deg, or the snap angle); Shift = 90 deg\n"
-      "  Q                 gizmo off (drag only)\n"
-      "  X                 toggle snapping       L  cycle lighting (Game / Lit / Cog mood)\n"
-      "  Ctrl+Z / Ctrl+Y   undo / redo (Ctrl+Shift+Z too)\n"
-      "  Ctrl+D            duplicate      Delete  delete\n"
-      "  Ctrl+S            save (writes .bak first)   Ctrl+O  open\n"
-      "  F1                input debug line   F2  this help\n"
-      "  Esc               deselect\n");
+  ImGui::TextWrapped("Keep this panel open while editing. Shortcuts apply when you are outside a text field.");
+  auto section = [](const char *title, std::initializer_list<std::pair<const char *, const char *>> rows) {
+    ImGui::Dummy(ImVec2(0, 8)); ImGui::SeparatorText(title);
+    if (ImGui::BeginTable(title, 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+      ImGui::TableSetupColumn("Keys", ImGuiTableColumnFlags_WidthFixed, 155);
+      ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthStretch);
+      for (auto &row : rows) {
+        ImGui::TableNextRow(0, ImGui::GetFrameHeight());
+        ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ImVec4(0.55f, 0.78f, 1, 1), "%s", row.first);
+        ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();
+        ImGui::PushTextWrapPos(0); ImGui::TextUnformatted(row.second); ImGui::PopTextWrapPos();
+      }
+      ImGui::EndTable();
+    }
+  };
+  section("Select and edit", {{"Left click", "Select an object. Hold Ctrl to add to the selection."},
+    {"Left drag", "Move selected objects at their current height."}, {"Shift + left drag", "Rotate selected objects. Scroll during the drag to turn by one step."},
+    {"W / E / R", "Move, rotate, or scale gizmo."}, {"Q", "Turn off the gizmo."}, {"[ / ]", "Turn by one angle step. Hold Shift for 90 degrees."},
+    {"X", "Toggle snapping."}, {"Arrow keys", "Nudge the selection."}, {"Ctrl + D / Delete", "Duplicate or delete the selection."}});
+  section("Camera", {{"Right drag", "Look around from the camera's current position."},
+    {"Middle drag", "Pan. Shift + right drag also pans."}, {"Wheel", "Move forward or backward. Hold Shift for fine steps."},
+    {"View > Camera speed", "Set and save the wheel speed."}, {"F / Home", "Frame the selection or the whole map."}, {"L", "Cycle the lighting."}});
+  section("Walk through the map", {{"F5", "Start or stop the Toon walker and restore the editing camera."},
+    {"Up / Down", "Walk forward or backward."}, {"Left / Right", "Turn the Toon."}, {"Ctrl", "Jump. Point at the 3D view to control the Toon."}});
+  section("Files and history", {{"Ctrl + S / Ctrl + O", "Save or open a file. Saving creates a backup."},
+    {"Ctrl + Z", "Undo, including sign text and property changes."}, {"Ctrl + Y", "Redo. Ctrl + Shift + Z also works."},
+    {"F1 / F2", "Input diagnostics or this shortcuts panel."}, {"Esc", "Clear the selection."}});
 }
+
 
 }  // namespace ui

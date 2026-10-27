@@ -971,7 +971,10 @@ void Editor::frame() {
   visgroupsPanel();
   if (showLog_) { ImGui::Begin("Log", &showLog_); if (showLog_) ui::logPanel(&logAuto_); ImGui::End(); }
   statsPanel();
-  if (showHelp_) { ImGui::Begin("Shortcuts", &showHelp_, ImGuiWindowFlags_AlwaysAutoResize); ui::helpPanel(); ImGui::End(); }
+  if (showHelp_) {
+    ImGui::SetNextWindowSize(ImVec2(610, std::min(760.f, vp->WorkSize.y - 60)), ImGuiCond_FirstUseEver);
+    ImGui::Begin("Shortcuts", &showHelp_); ui::helpPanel(); ImGui::End();
+  }
   openDialog();
   resDialog();
   passwordDialog();
