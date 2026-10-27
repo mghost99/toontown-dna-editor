@@ -38,7 +38,7 @@ bool Walker::start(NodePath world, NodePath scene, const LPoint3 &position) {
   stop();
   std::string legs = available({"phase_3/models/char/toons/legs/tt_a_chr_dgs_shorts_legs_1000.bam", "phase_3/models/char/ttr_r_chr_dgs_legs.bam", "phase_3/models/char/tt_a_chr_dgs_shorts_legs_1000.bam"});
   std::string torso = available({"phase_3/models/char/toons/torso/tt_a_chr_dgs_shorts_torso_1000.bam", "phase_3/models/char/ttr_r_chr_dgs_torso.bam", "phase_3/models/char/tt_a_chr_dgs_shorts_torso_1000.bam"});
-  std::string head = available({"phase_3/models/char/toons/head/tt_a_chr_dgs_shorts_head_1000.bam", "phase_3/models/char/ttr_r_chr_dgm_head.bam", "phase_3/models/char/tt_a_chr_dgs_shorts_head_1000.bam"});
+  std::string head = available({"phase_3/models/char/toons/head/tt_a_chr_dgs_shorts_head_1000.bam", "phase_3/models/char/ttr_r_chr_avt_dog.bam", "phase_3/models/char/tt_a_chr_dgs_shorts_head_1000.bam"});
   if (legs.empty() || torso.empty() || head.empty()) { core::warn("Walker needs the game's Toon legs, torso and head models in the resources folder."); return false; }
   NodePath legModel = assets::ModelCache::get().load(legs), torsoModel = assets::ModelCache::get().load(torso), headModel = assets::ModelCache::get().load(head);
   if (legModel.is_empty() || torsoModel.is_empty() || headModel.is_empty()) return false;
@@ -49,6 +49,11 @@ bool Walker::start(NodePath world, NodePath scene, const LPoint3 &position) {
   if (pelvis.is_empty() || neck.is_empty()) { core::warn("Walker could not find the Toon body attachment joints."); stop(); return false; }
   torso_.reparent_to(pelvis); head_.reparent_to(neck);
   for (const char *pattern : {"**/shoes", "**/boots*", "**/*naked*", "**/*skirt*"}) root.find_all_matches(pattern).hide();
+  if (head.find("ttr_r_") != std::string::npos) {
+    for (const char *pattern : {"**/geo_M_*Long*", "**/geo_M_lashes*", "**/geo_M_eyes*", "**/geo_M_muzzle*"}) head_.find_all_matches(pattern).hide();
+    head_.find_all_matches("**/geo_M_eyesNeutralOpenShort*").show();
+    head_.find_all_matches("**/geo_M_muzzleNeutralShort*").show();
+  }
   for (auto part : {legs_, torso_, head_}) {
     part.find_all_matches("**/+CollisionNode").stash();
     for (const char *pattern : {"**/legs", "**/feet", "**/arms", "**/neck", "**/head", "**/head-front", "**/ears"}) {
