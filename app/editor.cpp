@@ -56,6 +56,7 @@ bool Editor::open(const std::string &f) {
       } else core::error(err);
       return false;
     } }
+  if (walker.active()) toggleWalker();
   doc = std::move(nd);
   std::vector<std::string> undef;
   auto st = dna::storagesForFile(resRoot, doc.rel, doc.text, &undef);
@@ -452,6 +453,28 @@ bool Editor::handleDrag(render::View &v, bool topDown, bool hovered) {
   return dragging_;
 }
 
+bool Editor::toggleWalker() {
+  if (walker.active()) {
+    walker.stop(); v3->target = walkerCameraTarget_; v3->dist = walkerCameraDist_;
+    v3->yaw = walkerCameraYaw_; v3->pitch = walkerCameraPitch_; v3->apply(); return false;
+  }
+  if (!doc.root) return false;
+  LPoint3 spawn = v3->target;
+  float nearest = 1e30f;
+  dna::walk(doc.root.get(), [&](const dna::XmlNode *node) {
+    if (node->tag != "store_suit_point") return;
+    LPoint3 candidate(strtof(node->attr("x").c_str(), nullptr), strtof(node->attr("y").c_str(), nullptr), strtof(node->attr("z").c_str(), nullptr));
+    float distance = (candidate - v3->target).length_squared();
+    if (distance < nearest) { nearest = distance; spawn = candidate; }
+  });
+  walkerCameraTarget_ = v3->target; walkerCameraDist_ = v3->dist;
+  walkerCameraYaw_ = v3->yaw; walkerCameraPitch_ = v3->pitch;
+  dragging_ = dragArmed_ = orbiting_ = false; pointerView_ = 0;
+  bool started = walker.start(scene.world, scene.geom, spawn);
+  if (started) { show3D_ = true; walker.camera(*v3); }
+  return started;
+}
+
 void Editor::viewport3D() {
   if (!show3D_) { v3->setActive(false); return; }
   if (ImGui::GetIO().MouseWheel == 0) wheelUsed_ = false;
@@ -469,6 +492,15 @@ void Editor::viewport3D() {
   if (hovered) hoveredView_ = "3D";
   ImGui::Dummy(s);
   ImGuiIO &io = ImGui::GetIO();
+  if (walker.active()) {
+    bool input = (hovered || ImGui::IsWindowFocused()) && !io.WantTextInput && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+    float forward = input ? float(ImGui::IsKeyDown(ImGuiKey_UpArrow)) - float(ImGui::IsKeyDown(ImGuiKey_DownArrow)) : 0;
+    float turn = input ? float(ImGui::IsKeyDown(ImGuiKey_LeftArrow)) - float(ImGui::IsKeyDown(ImGuiKey_RightArrow)) : 0;
+    walker.step(scene.geom, io.DeltaTime, forward, turn, input && io.KeyCtrl);
+    walker.camera(*v3);
+    ImGui::GetWindowDrawList()->AddText(ImVec2(p.x + 12, p.y + 12), IM_COL32(255, 255, 255, 255), "Walk: arrow keys move / turn, Ctrl jumps. F5 returns to editing.");
+    ImGui::End(); return;
+  }
   bool down = ImGui::IsMouseDown(0) || ImGui::IsMouseDown(1) || ImGui::IsMouseDown(2);
   bool clicked = ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1) || ImGui::IsMouseClicked(2);
   if (!down) { if (pointerView_ == 3) pointerView_ = 0; }
@@ -722,6 +754,7 @@ void Editor::menuBar() {
     if (ImGui::MenuItem("Lit (sun + ambient)", nullptr, m == render::LightMode::Lit)) setLight(render::LightMode::Lit);
     if (ImGui::MenuItem("Cog mood (smog, dusk)", nullptr, m == render::LightMode::CogMood)) setLight(render::LightMode::CogMood);
     ImGui::Separator();
+    if (ImGui::MenuItem("Walk through map", "F5", walker.active(), !doc.path.empty())) toggleWalker();
     ImGui::MenuItem("3D view", nullptr, &show3D_);
     ImGui::MenuItem("2D map", nullptr, &showMap_);
     ImGui::MenuItem("Palette", nullptr, &showPalette_);
@@ -754,6 +787,8 @@ void Editor::menuBar() {
 void Editor::shortcuts() {
   ImGuiIO &io = ImGui::GetIO();
   if (io.WantTextInput) return;
+  if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) toggleWalker();
+  if (walker.active()) return;
   bool c = io.KeyCtrl;
   auto pr = [](ImGuiKey k) { return ImGui::IsKeyPressed(k, false); };
   if (c && pr(ImGuiKey_Z) && !io.KeyShift) history.undo(doc);

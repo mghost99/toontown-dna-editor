@@ -325,6 +325,27 @@ int main(int argc, char **argv) {
     rep << "save to " << sd << ": " << (ok ? "ok" : "FAILED") << ", reparse " << (lo ? "ok" : err) << ", items " << chk.items.size() << " (editor has " << live << " live)\n";
     if (!ok || !lo || (int)chk.items.size() != live) fails++;
     shot(tag + "_after_save");
+    // Enter and exit walking with the real shortcut; movement and jump also
+    // use ImGui key events, so focus and key routing are exercised.
+    {
+      auto rect = ed.v3->rect(); mouse(rect.x + rect.w / 2, rect.y + rect.h / 2, 0, -1);
+      LPoint3 camera = ed.v3->cam.get_pos();
+      io.AddKeyEvent(ImGuiKey_F5, true); frames(1); io.AddKeyEvent(ImGuiKey_F5, false); frames(2);
+      bool active = ed.walker.active(); rep << "F5 starts Toon walker: " << (active ? "yes" : "NO") << "\n";
+      if (active) {
+        LPoint3 start = ed.walker.root.get_pos();
+        io.AddKeyEvent(ImGuiKey_UpArrow, true); frames(15); io.AddKeyEvent(ImGuiKey_UpArrow, false); frames(1);
+        bool moved = (ed.walker.root.get_pos() - start).length() > 0.1f;
+        rep << "arrow input moves Toon: " << (moved ? "yes" : "NO") << "\n"; if (!moved) ++fails;
+        float z = ed.walker.root.get_z(); io.AddKeyEvent(ImGuiMod_Ctrl, true); frames(3);
+        bool jumped = ed.walker.root.get_z() > z + 0.05f;
+        io.AddKeyEvent(ImGuiMod_Ctrl, false); frames(1);
+        rep << "Ctrl input jumps: " << (jumped ? "yes" : "NO") << "\n"; if (!jumped) ++fails;
+        shot(tag + "_walker");
+        io.AddKeyEvent(ImGuiKey_F5, true); frames(1); io.AddKeyEvent(ImGuiKey_F5, false); frames(2);
+        if (ed.walker.active() || (ed.v3->cam.get_pos() - camera).length() > 0.01f) ++fails;
+      } else ++fails;
+    }
 
   }
   if (file.empty()) {   // in-place save on a scratch copy: .bak written, file re-read, edit persisted

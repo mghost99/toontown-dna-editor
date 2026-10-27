@@ -8,6 +8,7 @@
 #include "render/gizmo.h"
 #include "render/scene.h"
 #include "render/views.h"
+#include "render/walker.h"
 #include "ui/ui.h"
 #include <memory>
 
@@ -36,6 +37,8 @@ class Editor {
   std::vector<dna::CatalogEntry> catalog;
   std::unique_ptr<render::View> v3, v2, pv;
   render::Scene scene;
+  render::Walker walker;
+  bool toggleWalker();
   render::GizmoOp gizmoOp = render::GizmoOp::Translate;
   render::GizmoSnap snap;
   bool quit = false;
@@ -60,6 +63,8 @@ class Editor {
   // drag state
   bool dragging_ = false, dragArmed_ = false; int dragView_ = 0; float dragZ_ = 0; LPoint3 dragLast_; ImVec2 pressPos_;
   bool orbiting_ = false;
+  LPoint3 walkerCameraTarget_;
+  float walkerCameraDist_ = 0, walkerCameraYaw_ = 0, walkerCameraPitch_ = 0;
   int pointerView_ = 0;   // 2 or 3 while a mouse button is held; the other view ignores that drag
   bool rotDrag_ = false; float rotAccum_ = 0; std::vector<float> rotStartH_;   // Shift+left-drag yaw
   bool wheelUsed_ = false;   // wheel consumed by a drag (yaw) this frame

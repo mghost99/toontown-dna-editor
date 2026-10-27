@@ -6,6 +6,9 @@
 #include <cstdio>
 #include <cmath>
 #include "clockObject.h"
+#include "render/walker.h"
+#include "collisionPlane.h"
+#include "collisionNode.h"
 #include <cstdlib>
 
 int main(int argc, char **argv) {
@@ -37,6 +40,31 @@ int main(int argc, char **argv) {
   if (!line.get_child(0).has_color_scale()) return 1;
   printf("storage fonts, curved text, glyph scale, per-letter properties and Unicode passed\n");
   if (const char *resources = std::getenv("DNAED_TEST_RES")) {
+    assets::ModelCache::get().setResRoot(resources);
+    get_model_path().prepend_directory(Filename(resources));
+    NodePath world("walker-test"), ground = world.attach_new_node("scene");
+    PT(CollisionNode) floor = new CollisionNode("floor");
+    floor->set_into_collide_mask(BitMask32(2)); floor->set_from_collide_mask(BitMask32::all_off());
+    floor->add_solid(new CollisionPlane(LPlane(LVector3(0, 0, 1), LPoint3(0, 0, 0))));
+    ground.attach_new_node(floor);
+    render::Walker walker;
+    if (!walker.start(world, ground, LPoint3(0, 0, 0)) || !walker.grounded) { printf("walker startup/grounding failed\n"); return 1; }
+    for (int i = 0; i < 120; ++i) walker.step(ground, 1.f / 60, 1, 0, false);
+    if (walker.root.get_y() < 20) { printf("walker forward motion failed\n"); return 1; }
+    PT(CollisionNode) wall = new CollisionNode("wall");
+    wall->set_into_collide_mask(BitMask32(1)); wall->set_from_collide_mask(BitMask32::all_off());
+    wall->add_solid(new CollisionPlane(LPlane(LVector3(0, -1, 0), LPoint3(0, 26, 0))));
+    ground.attach_new_node(wall);
+    for (int i = 0; i < 120; ++i) walker.step(ground, 1.f / 60, 1, 0, false);
+    if (walker.root.get_y() > 25.4f) { printf("walker wall collision failed\n"); return 1; }
+    for (int i = 0; i < 60; ++i) walker.step(ground, 1.f / 60, 0, 1, false);
+    if (walker.root.get_h() < 90) { printf("walker turning failed\n"); return 1; }
+    walker.step(ground, 0.1f, 0, 0, true);
+    if (walker.root.get_z() < 0.5f || walker.grounded) { printf("walker jump failed\n"); return 1; }
+    for (int i = 0; i < 120; ++i) walker.step(ground, 1.f / 60, 0, 0, false);
+    if (!walker.grounded || std::fabs(walker.root.get_z()) > 0.01f) { printf("walker landing failed\n"); return 1; }
+    walker.stop(); if (walker.active()) return 1;
+    printf("Toon assembly, walking, turning, jump and landing passed\n");
     const char *model = std::getenv("DNAED_TEST_ANIM_MODEL"), *animation = std::getenv("DNAED_TEST_ANIM_NAME");
     if (model && animation) {
       assets::ModelCache::get().setResRoot(resources);
