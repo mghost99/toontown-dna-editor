@@ -153,6 +153,18 @@ static void collectSigns(const dna::XmlNode *n, const std::string &src, std::vec
 int inspectorPanel(dna::Item *it, int index, dna::Xform &x, const dna::Document *doc, SignEdit *sign) {
   inspectorFields.clear();
   if (!it) { ImGui::TextDisabled("Nothing selected.\nClick an object in the 3D view, 2D map, or Objects list."); return 0; }
+  dna::Item proxy;
+  static dna::Document templateDoc;
+  static int templateIndex = -1;
+  if (it->origId < 0) {
+    if (templateIndex != index || templateDoc.text != it->templateXml) {
+      templateIndex = index; templateDoc.text = it->templateXml;
+      templateDoc.root = dna::parseXml(templateDoc.text); templateDoc.fmt = dna::Format::Xml;
+    }
+    proxy = *it;
+    if (!templateDoc.root->children.empty()) proxy.node = templateDoc.root->children.front().get();
+    it = &proxy; doc = &templateDoc;
+  }
   ImGui::SeparatorText("Object");
   auto info = [](const char *label, const std::string &value) {
     ImGui::AlignTextToFramePadding();
@@ -222,12 +234,20 @@ int inspectorPanel(dna::Item *it, int index, dna::Xform &x, const dna::Document 
       ImGui::PushID((int)node->start);
       bool expanded = top || ImGui::TreeNode(node->tag.c_str());
       if (expanded) {
+        if (node->tag == "title" || node->tag == "texture") {
+          std::string value = dna::nodeText(node, doc->text);
+          char buf[4096]; snprintf(buf, sizeof buf, "%s", value.c_str());
+          ImGui::SetNextItemWidth(-1); ImGui::InputText("##text-value", buf, sizeof buf);
+          if (ImGui::IsItemDeactivatedAfterEdit() && value != buf) {
+            sign->node = node; sign->key = "@text"; sign->value = buf; sign->commit = true;
+          }
+        }
         for (auto &kv : node->attrs) {
           ImGui::TextDisabled("%s", kv.first.c_str());
           ImGui::SetNextItemWidth(-1);
           ImGui::PushID(kv.first.c_str());
           char buf[4096]; snprintf(buf, sizeof buf, "%s", kv.second.c_str());
-          ImGui::InputText("##property", buf, sizeof buf);
+          ImGui::InputText("##property", buf, sizeof buf); recordField("property:" + node->tag + ":" + kv.first);
           if (ImGui::IsItemDeactivatedAfterEdit() && kv.second != buf) {
             sign->node = node; sign->key = kv.first; sign->value = buf; sign->commit = true;
           }

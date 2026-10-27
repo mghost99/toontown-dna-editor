@@ -92,6 +92,28 @@ bool Document::replaceSource(size_t start, size_t end, const std::string &replac
   return true;
 }
 
+bool Document::setItemTemplate(int index, const std::string &xml) {
+  if (index < 0 || index >= (int)items.size() || items[index].origId >= 0) return false;
+  auto tree = parseXml(xml);
+  if (tree->children.empty()) return false;
+  auto node = tree->children.front().get(); auto &item = items[index];
+  item.templateXml = xml; item.name = node->attr("name", node->attr("id"));
+  item.code = node->attr("code", node->attr("type")); item.width = fl(node->attr("width"), 0);
+  return true;
+}
+
+bool Document::setNodeText(const XmlNode *node, const std::string &value) {
+  if (!node || (node->tag != "texture" && node->tag != "title")) return false;
+  std::string escaped;
+  for (char c : value) {
+    if (c == '&') escaped += "&amp;"; else if (c == '<') escaped += "&lt;";
+    else if (c == '>') escaped += "&gt;"; else escaped += c;
+  }
+  std::string xml = "<" + node->tag + ">" + escaped + "</" + node->tag + ">";
+  auto tree = parseXml(xml);
+  return replaceSource(node->start, node->end, fmt == Format::Xml ? xml : toDnaText(tree->children.front().get(), xml, 0));
+}
+
 bool Document::setNodeAttribute(const XmlNode *node, const std::string &key, const std::string &value) {
   if (!node || key.empty() || node->start >= node->end) return false;
   std::string xml = toXmlText(node, text, 0);
@@ -136,6 +158,13 @@ bool Document::setSignLine(const XmlNode *baseline, const std::string &letters) 
   std::vector<std::pair<size_t, size_t>> spans;
   for (auto &c : baseline->children) if (c->tag == "text" || c->tag == "text_geom") spans.push_back({c->start, c->end});
   size_t insert = fmt == Format::Xml ? text.rfind("</", baseline->end - 1) : baseline->end - 1;
+  if (fmt == Format::Xml && baseline->openEnd == baseline->end) {
+    std::string opening = text.substr(baseline->start, baseline->openEnd - baseline->start);
+    size_t slash = opening.rfind("/>");
+    if (slash == std::string::npos) return false;
+    opening.replace(slash, 2, ">");
+    return replaceSource(baseline->start, baseline->end, opening + block + "</baseline>");
+  }
   if (!spans.empty()) insert = spans.front().first;
   std::string updated = text;
   for (auto it = spans.rbegin(); it != spans.rend(); ++it) updated.erase(it->first, it->second - it->first);

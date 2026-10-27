@@ -165,6 +165,26 @@ int main(int argc, char **argv) {
   auto mouse = [&](float x, float y, int btn, int down) {   // down: -1 move only, 0 up, 1 down
     io.AddMousePosEvent(x, y); if (down >= 0) io.AddMouseButtonEvent(btn, down == 1); frames(1);
   };
+  auto editField = [&](const std::string &id, const std::string &value) {
+    auto fields = ui::inspectorFields;
+    auto field = std::find_if(fields.begin(), fields.end(), [&](const ui::InspectorField &field) { return field.id == id; });
+    if (field == fields.end()) return false;
+    for (auto window : ImGui::GetCurrentContext()->Windows) {
+      if (std::string(window->Name).find("Inspector/insp-scroll") != std::string::npos) {
+        if (field->y < window->InnerClipRect.Min.y || field->y > window->InnerClipRect.Max.y)
+          ImGui::SetScrollY(window, window->Scroll.y + field->y - (window->InnerClipRect.Min.y + window->InnerClipRect.Max.y) / 2);
+      }
+    }
+    frames(3); fields = ui::inspectorFields;
+    field = std::find_if(fields.begin(), fields.end(), [&](const ui::InspectorField &field) { return field.id == id; });
+    if (field == fields.end()) return false;
+    mouse(field->x, field->y, 0, -1); mouse(field->x, field->y, 0, 1); mouse(field->x, field->y, 0, 0);
+    io.AddKeyEvent(ImGuiMod_Ctrl, true); io.AddKeyEvent(ImGuiKey_A, true); frames(1);
+    io.AddKeyEvent(ImGuiKey_A, false); io.AddKeyEvent(ImGuiMod_Ctrl, false); frames(1);
+    io.AddInputCharactersUTF8(value.c_str()); frames(2);
+    io.AddKeyEvent(ImGuiKey_Tab, true); frames(1); io.AddKeyEvent(ImGuiKey_Tab, false); frames(3);
+    return true;
+  };
   frames(3);
   // Fractional wheel input must remain fine even on a large map.
   {
@@ -199,26 +219,6 @@ int main(int argc, char **argv) {
     }
     if (signItem >= 0) {
       ed.select({signItem}); ed.frameSelection(); frames(3);
-      auto editField = [&](const std::string &id, const std::string &value) {
-        auto fields = ui::inspectorFields;
-        auto field = std::find_if(fields.begin(), fields.end(), [&](const ui::InspectorField &field) { return field.id == id; });
-        if (field == fields.end()) return false;
-        for (auto window : ImGui::GetCurrentContext()->Windows) {
-          if (std::string(window->Name).find("Inspector/insp-scroll") != std::string::npos) {
-            if (field->y < window->InnerClipRect.Min.y || field->y > window->InnerClipRect.Max.y)
-              ImGui::SetScrollY(window, window->Scroll.y + field->y - (window->InnerClipRect.Min.y + window->InnerClipRect.Max.y) / 2);
-          }
-        }
-        frames(3); fields = ui::inspectorFields;
-        field = std::find_if(fields.begin(), fields.end(), [&](const ui::InspectorField &field) { return field.id == id; });
-        if (field == fields.end()) return false;
-        mouse(field->x, field->y, 0, -1); mouse(field->x, field->y, 0, 1); mouse(field->x, field->y, 0, 0);
-        io.AddKeyEvent(ImGuiMod_Ctrl, true); io.AddKeyEvent(ImGuiKey_A, true); frames(1);
-        io.AddKeyEvent(ImGuiKey_A, false); io.AddKeyEvent(ImGuiMod_Ctrl, false); frames(1);
-        io.AddInputCharactersUTF8(value.c_str()); frames(2);
-        io.AddKeyEvent(ImGuiKey_Tab, true); frames(1); io.AddKeyEvent(ImGuiKey_Tab, false); frames(3);
-        return true;
-      };
       std::string before = ed.doc.text;
       bool edited = editField("sign:0", "Editor Test");
       bool persisted = ed.doc.text != before;
@@ -318,6 +318,15 @@ int main(int argc, char **argv) {
     double pt = core::nowMs(); ed.openPreview(ci); frames(1); rep << "preview open (" << ed.catalog[ci].code << "): " << core::nowMs() - pt << " ms\n";
     ImGui::SetWindowFocus("Prop Preview"); shot(tag + "_preview"); ImGui::SetWindowFocus("Objects");
     int pid = ed.placePreviewed(); rep << "placed item " << pid << "\n"; shot(tag + "_placed");
+    ed.select({pid}); frames(2);
+    bool renamed = editField("property:prop:name", "placed_editor_test");
+    bool renameOk = renamed && ed.doc.items[pid].name == "placed_editor_test";
+    rep << "Inspector edits newly placed object: " << (renameOk ? "yes" : "NO") << "\n";
+    if (!renameOk) ++fails;
+    if (renameOk) {
+      ed.history.undo(ed.doc); if (ed.doc.items[pid].name == "placed_editor_test") ++fails;
+      ed.history.redo(ed.doc); if (ed.doc.items[pid].name != "placed_editor_test") ++fails;
+    }
     // save to a scratch dir (never the repo file) and re-parse
     std::string sd = selftest + "/saved"; bool ok = ed.save(sd);
     dna::Document chk; std::string err; bool lo = chk.load(sd + "/" + fs::path(f).filename().string(), res, &err);
@@ -329,6 +338,7 @@ int main(int argc, char **argv) {
     // use ImGui key events, so focus and key routing are exercised.
     {
       auto rect = ed.v3->rect(); mouse(rect.x + rect.w / 2, rect.y + rect.h / 2, 0, -1);
+      mouse(rect.x + rect.w / 2, rect.y + rect.h / 2, 0, 1); mouse(rect.x + rect.w / 2, rect.y + rect.h / 2, 0, 0);
       LPoint3 camera = ed.v3->cam.get_pos();
       io.AddKeyEvent(ImGuiKey_F5, true); frames(1); io.AddKeyEvent(ImGuiKey_F5, false); frames(2);
       bool active = ed.walker.active(); rep << "F5 starts Toon walker: " << (active ? "yes" : "NO") << "\n";
@@ -348,6 +358,14 @@ int main(int argc, char **argv) {
     }
 
   }
+  {
+    auto rect = ed.v3->rect();
+    mouse(rect.x + 20, rect.y + 45, 0, -1); mouse(rect.x + 20, rect.y + 45, 0, 1); mouse(rect.x + 20, rect.y + 45, 0, 0);
+  }
+  io.AddKeyEvent(ImGuiKey_F2, true); frames(1); io.AddKeyEvent(ImGuiKey_F2, false); frames(2);
+  auto help = ImGui::FindWindowByName("Shortcuts"); if (!help || !help->Active) ++fails;
+  shot("shortcuts", false, false);
+  io.AddKeyEvent(ImGuiKey_F2, true); frames(1); io.AddKeyEvent(ImGuiKey_F2, false); frames(1);
   if (file.empty()) {   // in-place save on a scratch copy: .bak written, file re-read, edit persisted
     std::string dir = selftest + "/inplace"; fs::create_directories(dir);
     std::string cp = dir + "/toontown_central_sz.xml";

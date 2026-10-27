@@ -45,6 +45,8 @@ class Document {
   std::vector<std::string> visgroups;
   int indexOfNode(const XmlNode *n) const;     // item index for an editable element node, -1 if none
   // Rewrites one baseline's per-letter text nodes from a single string. Reparses the file text.
+  bool setNodeText(const XmlNode *node, const std::string &value);
+  bool setItemTemplate(int index, const std::string &xml);
   bool setNodeAttribute(const XmlNode *node, const std::string &key, const std::string &value);
   bool replaceSource(size_t start, size_t end, const std::string &replacement);
   bool setSignLine(const XmlNode *baseline, const std::string &letters);

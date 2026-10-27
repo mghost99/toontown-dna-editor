@@ -174,6 +174,9 @@ int main(int argc, char **argv) {
     CHECK(baseline() && baseline()->child("graphic"));
     CHECK(doc.setNodeAttribute(baseline(), "code", "custom_font"));
     CHECK(baseline()->attr("code") == "custom_font");
+    const dna::XmlNode *title = nullptr;
+    dna::walk(doc.root.get(), [&](const dna::XmlNode *n) { if (n->tag == "title") title = n; });
+    CHECK(title && doc.setNodeText(title, "Edited Shop & Co"));
     CHECK(doc.setNodeAttribute(baseline(), "width", "42"));
     CHECK(save(doc, T + "/sign-result." + extension));
     dna::Document back; CHECK(load(back, T + "/sign-result." + extension));
@@ -181,10 +184,34 @@ int main(int argc, char **argv) {
     dna::walk(back.root.get(), [&](const dna::XmlNode *n) { if (n->tag == "text") { words += dna::nodeText(n, back.text); ++glyphs; } });
     CHECK(words == "Café & Shop" && glyphs == 11);
     CHECK(findItem(back, "added") >= 0 && back.items.size() == count - 1);
+    CHECK(doc.setSignLine(baseline(), "Say \"hi\" \\ bye"));
+    CHECK(save(doc, T + "/quoted." + extension));
+    dna::Document quoted; CHECK(load(quoted, T + "/quoted." + extension));
+    std::string quotedText;
+    dna::walk(quoted.root.get(), [&](const dna::XmlNode *n) { if (n->tag == "text") quotedText += dna::nodeText(n, quoted.text); });
+    CHECK(quotedText == "Say \"hi\" \\ bye");
     CHECK(doc.setSignLine(baseline(), ""));
     CHECK(baseline()->child("graphic") && !baseline()->child("text"));
     CHECK(doc.setSignLine(baseline(), "New"));
     CHECK(baseline()->child("text"));
+  }
+  {
+    dna::Document doc; doc.fmt = dna::Format::Xml;
+    CHECK(doc.replaceSource(0, 0, "<scene><prop name=\"sample\" code=\"sample\"><sign><baseline code=\"mickey\" /></sign></prop></scene>"));
+    const dna::XmlNode *baseline = nullptr;
+    dna::walk(doc.root.get(), [&](const dna::XmlNode *n) { if (n->tag == "baseline") baseline = n; });
+    CHECK(doc.setSignLine(baseline, "Empty sign"));
+    std::string text;
+    dna::walk(doc.root.get(), [&](const dna::XmlNode *n) { if (n->tag == "text") text += dna::nodeText(n, doc.text); });
+    CHECK(text == "Empty sign");
+    dna::Item placed; placed.kind = "prop"; placed.templateXml = "<prop name=\"before\" code=\"a\" />";
+    doc.items.push_back(placed); int id = (int)doc.items.size() - 1;
+    commands::History history;
+    auto command = std::make_unique<commands::TemplateCmd>(); command->id = id;
+    command->before = placed.templateXml; command->after = "<prop name=\"after\" code=\"b\" />";
+    history.execute(doc, std::move(command)); CHECK(doc.items[id].name == "after" && doc.items[id].code == "b");
+    CHECK(history.undo(doc) && doc.items[id].name == "before");
+    CHECK(history.redo(doc) && doc.items[id].name == "after");
   }
   printf("%d/%d checks passed\n", checks - fails, checks);
   return fails ? 1 : 0;

@@ -910,14 +910,26 @@ void Editor::frame() {
     ui::SignEdit sign;
     int r = ui::inspectorPanel(it, it ? selection[0] : -1, x, &doc, &sign);
     if (sign.commit) {
-      auto command = std::make_unique<commands::SourceCmd>();
-      command->before = doc.text; command->beforeDirty = doc.textDirty;
-      command->what = sign.baseline ? "Edit sign text" : "Edit property";
-      bool changed = sign.baseline ? doc.setSignLine(sign.baseline, sign.text)
-                                   : doc.setNodeAttribute(sign.node, sign.key, sign.value);
+      auto apply = [&](dna::Document &target) {
+        if (sign.baseline) return target.setSignLine(sign.baseline, sign.text);
+        if (sign.key == "@text") return target.setNodeText(sign.node, sign.value);
+        return target.setNodeAttribute(sign.node, sign.key, sign.value);
+      };
+      bool changed = false;
+      if (it && it->origId < 0) {
+        dna::Document temporary; temporary.fmt = dna::Format::Xml; temporary.text = it->templateXml;
+        auto command = std::make_unique<commands::TemplateCmd>();
+        command->id = selection[0]; command->before = it->templateXml;
+        if (apply(temporary) && doc.setItemTemplate(command->id, temporary.text)) {
+          command->after = temporary.text; history.pushApplied(std::move(command)); changed = true;
+        }
+      } else {
+        auto command = std::make_unique<commands::SourceCmd>();
+        command->before = doc.text; command->beforeDirty = doc.textDirty;
+        command->what = sign.baseline ? "Edit sign text" : "Edit property";
+        if (apply(doc)) { command->after = doc.text; history.pushApplied(std::move(command)); changed = true; }
+      }
       if (changed) {
-        command->after = doc.text;
-        history.pushApplied(std::move(command));
         rebuildScene();
         it = selection.size() == 1 ? &doc.items[selection[0]] : nullptr;
       }

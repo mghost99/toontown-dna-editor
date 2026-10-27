@@ -42,6 +42,14 @@ struct SourceCmd : Command {
   std::string label() const override { return what; }
 };
 
+struct TemplateCmd : Command {
+  int id = -1; std::string before, after;
+  void redo(dna::Document &d) override { d.setItemTemplate(id, after); }
+  void undo(dna::Document &d) override { d.setItemTemplate(id, before); }
+  std::vector<int> touched() const override { return {}; }
+  std::string label() const override { return "Edit placed object"; }
+};
+
 class History {
  public:
   std::function<void(const std::vector<int> &)> onChanged;

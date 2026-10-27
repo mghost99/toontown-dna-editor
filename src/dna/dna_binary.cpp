@@ -66,7 +66,11 @@ std::string b64(const std::string &in) {
   while (o.size() % 4) o += '=';
   return o;
 }
-std::string qs(const std::string &s) { return "\"" + s + "\""; }
+std::string qs(const std::string &s) {
+  std::string out = "\"";
+  for (char c : s) { if (c == '\\' || c == '"') out += '\\'; out += c; }
+  return out + "\"";
+}
 
 struct BlockRec { std::string title, article, type; };
 int blockIndex(const std::string &id) {   // "tb12:..." / "sz18:..." -> 12 / 18
