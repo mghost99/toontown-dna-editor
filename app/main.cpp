@@ -165,6 +165,23 @@ int main(int argc, char **argv) {
     io.AddMousePosEvent(x, y); if (down >= 0) io.AddMouseButtonEvent(btn, down == 1); frames(1);
   };
   frames(3);
+  // Fractional wheel input must remain fine even on a large map.
+  {
+    auto rectangle = ed.v3->rect();
+    mouse(rectangle.x + rectangle.w * 0.5f, rectangle.y + rectangle.h * 0.5f, 0, -1);
+    auto original = ed.v3->target;
+    io.AddMouseWheelEvent(0, 0.1f); frames(2);
+    float travel = (ed.v3->target - original).length();
+    bool fine = std::fabs(travel - ed.wheelSpeed * 0.1f) < 0.02f;
+    rep << "fractional wheel travel: " << travel << " ft, expected " << ed.wheelSpeed * 0.1f << "\n";
+    if (!fine) ++fails;
+    float distance = ed.v3->dist; ed.v3->dist = 10000;
+    original = ed.v3->target;
+    io.AddMouseWheelEvent(0, 0.1f); frames(2);
+    travel = (ed.v3->target - original).length();
+    if (std::fabs(travel - ed.wheelSpeed * 0.1f) > 0.02f) ++fails;
+    ed.v3->dist = distance; ed.frameAll();
+  }
   std::vector<std::string> files = {"phase_4/dna/toontown_central_sz.xml", "phase_5/dna/toontown_central_2100.xml"};
   if (!file.empty()) files = {file};
   for (auto &f : files) {

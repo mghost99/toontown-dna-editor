@@ -42,10 +42,8 @@ void View::apply() {
   cam.set_pos(target - fwd * dist);
   // Past straight down/up, world +Z is behind the camera. Flip the up hint so the view can pass through the ground.
   cam.look_at(target, std::cos(p) >= 0 ? LVector3::up() : -LVector3::up());
-  // Close in, keep the near plane tiny so the camera can pass through the street. Farther out, push it
-  // out a little so the depth buffer still has precision across a neighborhood.
-  float near = dist > 30.f ? std::min(dist * 0.001f, 2.f) : 0.05f;
-  lens->set_near_far(near, std::max(20000.f, dist * 50.f));
+  // Free-flight cameras can approach geometry at any map size.
+  lens->set_near_far(0.05f, std::max(20000.f, dist * 50.f));
 }
 void View::frame(const LPoint3 &mn, const LPoint3 &mx) {
   target = (mn + mx) * 0.5f;

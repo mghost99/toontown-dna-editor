@@ -43,6 +43,7 @@ class Editor {
   double lastFrameMs = 0;
   // test hooks
   bool forceViews = false;
+  float wheelSpeed = 1.5f;
  private:
   platform::App &app_;
   assets::Storage storage_;

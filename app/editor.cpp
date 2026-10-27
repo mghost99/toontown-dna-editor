@@ -21,6 +21,8 @@ static std::string fmt(const char *f, ...) {
 }
 
 Editor::Editor(platform::App &app, std::string res) : resRoot(std::move(res)), app_(app) {
+  std::string speed = core::readConfig("camera_wheel_speed");
+  if (!speed.empty()) { float value = strtof(speed.c_str(), nullptr); if (std::isfinite(value)) wheelSpeed = std::clamp(value, 0.1f, 50.f); }
   assets::ModelCache::get().setResRoot(resRoot);
   get_model_path().prepend_directory(Filename::from_os_specific(resRoot));
   GraphicsOutput *w = app.win();
@@ -496,10 +498,10 @@ void Editor::viewport3D() {
     return LVector3(std::sin(y) * std::cos(pth), std::cos(y) * std::cos(pth), std::sin(pth));
   };
   if ((own || (hovered && pointerView_ == 0)) && io.MouseWheel != 0 && !wheelUsed_) {
-    // One light notch is a small step. A harder flick stacks wheel units, and the curve grows slower than that stack.
-    float mag = std::pow(std::fabs(io.MouseWheel), 0.65f);
-    float step = v3->dist * 0.02f * mag;
-    v3->target += viewFwd() * (io.MouseWheel > 0 ? step : -step);
+    // Fractional touchpad input stays fractional. Speed is independent of the
+    // map's size or the distance retained from the last Frame All operation.
+    float step = io.MouseWheel * wheelSpeed * (io.KeyShift ? 0.2f : 1.f);
+    v3->target += viewFwd() * step;
   }
   bool pan = own && (ImGui::IsMouseDown(2) || (ImGui::IsMouseDown(1) && io.KeyShift));
   if (own && ImGui::IsMouseDown(1) && !io.KeyShift) orbiting_ = true;
@@ -730,6 +732,15 @@ void Editor::menuBar() {
     ImGui::MenuItem("Log", nullptr, &showLog_);
     ImGui::MenuItem("Timings", nullptr, &showTimings_);
     ImGui::Separator();
+    if (ImGui::BeginMenu("Camera speed")) {
+      ImGui::TextDisabled("Feet per wheel notch");
+      ImGui::SetNextItemWidth(220);
+      ImGui::SliderFloat("##wheel-speed", &wheelSpeed, 0.1f, 50.f, "%.1f ft", ImGuiSliderFlags_Logarithmic);
+      if (ImGui::IsItemDeactivatedAfterEdit()) core::writeConfig("camera_wheel_speed", dna::fmtNum(wheelSpeed));
+      ImGui::TextDisabled("Hold Shift for fine scrolling.");
+      if (ImGui::MenuItem("Reset speed")) { wheelSpeed = 1.5f; core::writeConfig("camera_wheel_speed", "1.5"); }
+      ImGui::EndMenu();
+    }
     if (ImGui::MenuItem("Frame all", "Home")) frameAll();
     if (ImGui::MenuItem("Frame selection", "F")) frameSelection();
     if (ImGui::MenuItem("Reset panel layout")) layoutDone_ = false;
