@@ -66,6 +66,7 @@ void Storage::addCode(const std::string &code, const std::string &model, const s
 }
 
 NodePath Storage::findNode(const std::string &code) {
+  if (code.empty()) return NodePath();   // e.g. a sign with no backing model: nothing to load, nothing missing
   auto r = resolved_.find(code); if (r != resolved_.end()) return r->second;
   auto it = nodes_.find(code);
   NodePath out;
