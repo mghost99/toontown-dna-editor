@@ -130,6 +130,11 @@ static const char *signFace(const std::string &code) {
   return code.empty() ? "default" : code.c_str();
 }
 
+std::vector<InspectorField> inspectorFields;
+static void recordField(const std::string &id) {
+  auto a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+  inspectorFields.push_back({id, (a.x + b.x) / 2, (a.y + b.y) / 2});
+}
 struct SignLine { const dna::XmlNode *baseline; std::string text, font; };
 static void collectSigns(const dna::XmlNode *n, const std::string &src, std::vector<SignLine> &lines, std::vector<std::string> &logos) {
   if (!n) return;
@@ -146,6 +151,7 @@ static void collectSigns(const dna::XmlNode *n, const std::string &src, std::vec
 }
 
 int inspectorPanel(dna::Item *it, int index, dna::Xform &x, const dna::Document *doc, SignEdit *sign) {
+  inspectorFields.clear();
   if (!it) { ImGui::TextDisabled("Nothing selected.\nClick an object in the 3D view, 2D map, or Objects list."); return 0; }
   ImGui::SeparatorText("Object");
   auto info = [](const char *label, const std::string &value) {
@@ -180,14 +186,23 @@ int inspectorPanel(dna::Item *it, int index, dna::Xform &x, const dna::Document 
       }
       for (size_t i = 0; i < lines.size(); i++) {
         if (lines.size() > 1) ImGui::TextDisabled("Line %d", (int)i + 1);
-        info("Font", lines[i].font.empty() ? std::string("none") : lines[i].font);
-        info("Face fallback", signFace(lines[i].font));
+        ImGui::PushID((int)i);
+        ImGui::TextDisabled("Font code");
+        ImGui::SetNextItemWidth(-1);
+        char font[512]; snprintf(font, sizeof font, "%s", lines[i].font.c_str());
+        ImGui::InputText("##font", font, sizeof font); recordField("font:" + std::to_string(i));
+        if (sign && ImGui::IsItemDeactivatedAfterEdit() && lines[i].font != font) {
+          sign->node = lines[i].baseline; sign->key = "code"; sign->value = font; sign->commit = true;
+        }
+        ImGui::PopID();
+        info("Fallback", signFace(lines[i].font));
         ImGui::TextDisabled("Text");
         ImGui::SetNextItemWidth(-1);
         char buf[512];
         snprintf(buf, sizeof buf, "%s", drafts[i].c_str());
         ImGui::PushID((int)i);
         if (ImGui::InputText("##sign", buf, sizeof buf)) drafts[i] = buf;
+        recordField("sign:" + std::to_string(i));
         if (sign && ImGui::IsItemDeactivatedAfterEdit() && drafts[i] != lines[i].text) {
           sign->baseline = lines[i].baseline; sign->text = drafts[i]; sign->commit = true;
         }

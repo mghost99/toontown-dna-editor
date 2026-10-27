@@ -3,6 +3,7 @@
 #include "core/log.h"
 #include "core/resconfig.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "pnmImage.h"
 #include "dna/dna_document.h"
 #include "compress_string.h"
@@ -188,6 +189,53 @@ int main(int argc, char **argv) {
     std::string tag = fs::path(f).stem().string();
     double ot = core::nowMs(); ed.open(f); rep << "open " << f << ": " << core::nowMs() - ot << " ms\n";
     ed.setLight(render::LightMode::Game); shot(tag + "_open");
+    // Drive sign text and font edits through the Inspector's actual widgets.
+    int signItem = -1;
+    for (int i = 0; i < (int)ed.doc.items.size() && signItem < 0; ++i) {
+      if (!ed.doc.items[i].node) continue;
+      dna::walk(ed.doc.items[i].node, [&](const dna::XmlNode *node) {
+        if (node->tag == "baseline" && node->child("text")) signItem = i;
+      });
+    }
+    if (signItem >= 0) {
+      ed.select({signItem}); ed.frameSelection(); frames(3);
+      auto editField = [&](const std::string &id, const std::string &value) {
+        auto fields = ui::inspectorFields;
+        auto field = std::find_if(fields.begin(), fields.end(), [&](const ui::InspectorField &field) { return field.id == id; });
+        if (field == fields.end()) return false;
+        for (auto window : ImGui::GetCurrentContext()->Windows) {
+          if (std::string(window->Name).find("Inspector/insp-scroll") != std::string::npos) {
+            if (field->y < window->InnerClipRect.Min.y || field->y > window->InnerClipRect.Max.y)
+              ImGui::SetScrollY(window, window->Scroll.y + field->y - (window->InnerClipRect.Min.y + window->InnerClipRect.Max.y) / 2);
+          }
+        }
+        frames(3); fields = ui::inspectorFields;
+        field = std::find_if(fields.begin(), fields.end(), [&](const ui::InspectorField &field) { return field.id == id; });
+        if (field == fields.end()) return false;
+        mouse(field->x, field->y, 0, -1); mouse(field->x, field->y, 0, 1); mouse(field->x, field->y, 0, 0);
+        io.AddKeyEvent(ImGuiMod_Ctrl, true); io.AddKeyEvent(ImGuiKey_A, true); frames(1);
+        io.AddKeyEvent(ImGuiKey_A, false); io.AddKeyEvent(ImGuiMod_Ctrl, false); frames(1);
+        io.AddInputCharactersUTF8(value.c_str()); frames(2);
+        io.AddKeyEvent(ImGuiKey_Tab, true); frames(1); io.AddKeyEvent(ImGuiKey_Tab, false); frames(3);
+        return true;
+      };
+      std::string before = ed.doc.text;
+      bool edited = editField("sign:0", "Editor Test");
+      bool persisted = ed.doc.text != before;
+      rep << "Inspector text input commits: " << (edited && persisted ? "yes" : "NO") << "\n";
+      if (!edited || !persisted) ++fails;
+      ed.select({signItem}); frames(2);
+      edited = editField("font:0", "mickey");
+      bool font = false;
+      dna::walk(ed.doc.items[signItem].node, [&](const dna::XmlNode *node) { if (node->tag == "baseline" && node->attr("code") == "mickey") font = true; });
+      if (!edited || !font) ++fails;
+      shot(tag + "_inspector_sign");
+      while (ed.history.canUndo()) ed.history.undo(ed.doc);
+      if (ed.doc.text != before) ++fails;
+      rep << "Inspector text/font edits undo to original source: " << (ed.doc.text == before ? "yes" : "NO") << "\n";
+      ed.frameAll(); ed.select({}); frames(2);
+    }
+
     ed.setLight(render::LightMode::CogMood); shot(tag + "_cogmood"); ed.setLight(render::LightMode::Game);
     // select: click the 3D view where an object projects
     int target = -1; float tx = 0, ty = 0;
@@ -277,6 +325,7 @@ int main(int argc, char **argv) {
     rep << "save to " << sd << ": " << (ok ? "ok" : "FAILED") << ", reparse " << (lo ? "ok" : err) << ", items " << chk.items.size() << " (editor has " << live << " live)\n";
     if (!ok || !lo || (int)chk.items.size() != live) fails++;
     shot(tag + "_after_save");
+
   }
   if (file.empty()) {   // in-place save on a scratch copy: .bak written, file re-read, edit persisted
     std::string dir = selftest + "/inplace"; fs::create_directories(dir);
