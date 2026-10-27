@@ -3,6 +3,7 @@
 #pragma once
 #include "nodePath.h"
 #include "texture.h"
+#include "textFont.h"
 #include <map>
 #include <set>
 #include <string>
@@ -33,6 +34,8 @@ class Storage {
   const std::vector<std::string> &files() const { return files_; }
   bool hasCode(const std::string &code) const { return nodes_.count(code) > 0; }
   NodePath findNode(const std::string &code);       // loads on first use; empty if unknown/bad
+  PT(TextFont) findFont(const std::string &code);
+  std::string fontPath(const std::string &code) const;
   PT(Texture) findTexture(const std::string &code);
   int numCatalog(const std::string &root) const;
   std::string catalogCode(const std::string &root, int i) const;
@@ -43,7 +46,7 @@ class Storage {
  private:
   std::vector<std::string> files_;
   std::map<std::string, NodeRef> nodes_;
-  std::map<std::string, std::string> texPaths_;
+  std::map<std::string, std::string> texPaths_, fontPaths_;
   std::map<std::string, NodePath> resolved_;
   std::map<std::string, std::vector<std::string>> catalog_;
 };

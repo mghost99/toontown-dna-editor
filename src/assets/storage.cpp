@@ -6,6 +6,7 @@
 #include "loaderOptions.h"
 #include "texturePool.h"
 #include "modelRoot.h"
+#include "fontPool.h"
 
 namespace assets {
 
@@ -31,7 +32,7 @@ PT(Texture) ModelCache::texture(const std::string &p) {
   tex_[p] = t; return t;
 }
 
-void Storage::clear() { files_.clear(); nodes_.clear(); texPaths_.clear(); resolved_.clear(); catalog_.clear(); missing.clear(); }
+void Storage::clear() { files_.clear(); nodes_.clear(); texPaths_.clear(); fontPaths_.clear(); resolved_.clear(); catalog_.clear(); missing.clear(); }
 
 void Storage::addFiles(const std::vector<std::string> &rels) {
   auto &res = ModelCache::get().resRoot();
@@ -48,6 +49,8 @@ void Storage::addFiles(const std::vector<std::string> &rels) {
         if (code.empty()) return;
         nodes_[code] = ref; resolved_.erase(code);
         catalog_[n->attr("root")].push_back(code);
+      } else if (n->tag == "store_font") {
+        fontPaths_[n->attr("code")] = n->attr("path");
       } else if (n->tag == "store_texture") {
         texPaths_[n->attr("code")] = n->attr("path");
         catalog_[n->attr("root")].push_back(n->attr("code"));
@@ -80,6 +83,15 @@ NodePath Storage::findNode(const std::string &code) {
   }
   resolved_[code] = out;
   return out;
+}
+
+std::string Storage::fontPath(const std::string &code) const {
+  auto it = fontPaths_.find(code);
+  return it == fontPaths_.end() ? "" : it->second;
+}
+PT(TextFont) Storage::findFont(const std::string &code) {
+  std::string path = fontPath(code);
+  return path.empty() ? nullptr : FontPool::load_font(path);
 }
 
 PT(Texture) Storage::findTexture(const std::string &code) {

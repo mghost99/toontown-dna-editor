@@ -64,9 +64,9 @@ static bool hasEditableDesc(const dna::XmlNode *n) {
   bool f = false; dna::walk(n, [&](const dna::XmlNode *c) { if (dna::kEditable.count(c->tag)) f = true; }); return f;
 }
 
-static PT(TextFont) signFont(const std::string &code) {
-  static std::map<std::string, PT(TextFont)> cache;
-  if (auto it = cache.find(code); it != cache.end()) return it->second;
+static PT(TextFont) signFont(const std::string &code, assets::Storage &st) {
+  PT(TextFont) stored = st.findFont(code);
+  if (stored && stored->is_valid()) return stored;
   std::string path = "phase_3/fonts/Humanist.ttf";
   if (code == "mickey" || code == "sign" || code == "classic") path = "phase_3/fonts/MickeyFont.bam";
   else if (code == "fancy" || code == "TT_Comedy") path = "phase_3/fonts/Comedy.ttf";
@@ -83,12 +83,11 @@ static PT(TextFont) signFont(const std::string &code) {
   }
   PT(TextFont) f = FontPool::load_font(path);
   if (!f || !f->is_valid()) f = FontPool::load_font("phase_3/fonts/MickeyFont.bam");
-  cache[code] = f;
   return f;
 }
 
 // Same layout as the game's sign typesetter: glyphs in font units, centered, then bent onto the baseline ellipse.
-static void typesetBaseline(NodePath np, const dna::XmlNode *n, const std::string &src) {
+static void typesetBaseline(NodePath np, const dna::XmlNode *n, const std::string &src, assets::Storage &st) {
   std::string letters;
   for (auto &c : n->children) if (c->tag == "text") letters += dna::nodeText(c.get(), src);
   if (letters.empty()) return;
@@ -100,7 +99,7 @@ static void typesetBaseline(NodePath np, const dna::XmlNode *n, const std::strin
   float stumble = (float)fl(n->attr("stumble"), 0), stomp = (float)fl(n->attr("stomp"), 0), indent = (float)fl(n->attr("indent"), 0);
   float width = (float)fl(n->attr("width"), 0), height = (float)fl(n->attr("height"), 0);
   std::string flags = n->attr("flags");
-  PT(TextFont) font = signFont(n->attr("code"));
+  PT(TextFont) font = signFont(n->attr("code"), st);
   NodePath root = np.attach_new_node("typesetter");
   root.set_scale(1 / sx, 1, 1 / sz);
   float x = 0;
@@ -228,7 +227,7 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
       NodePath g = st.findNode(c->attr("code"));
       if (!g.is_empty()) { NodePath gp = g.copy_to(np); gp.set_two_sided(true); gp.set_depth_offset(55); }
     }
-    if (np.get_num_children() == 0 || np.find("**/typesetter").is_empty()) typesetBaseline(np, n, src);
+    if (np.get_num_children() == 0 || np.find("**/typesetter").is_empty()) typesetBaseline(np, n, src, st);
   } else if (t == "text_geom" || t == "text" || t == "graphic" || t == "title" || t == "texture" ||
              t == "battle_cell" || t == "suit_edge" || t == "store_suit_point" || t == "curve_point" ||
              t == "prop_list") {
