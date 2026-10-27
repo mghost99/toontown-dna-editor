@@ -25,7 +25,7 @@ std::vector<PT(AnimControl)> loopModel(NodePath model, const std::string &modelP
   auto_bind(model.node(), embedded, ~0);
   for (int i = 0; i < embedded.get_num_anims(); ++i) {
     auto control = embedded.get_anim(i);
-    if (animation.empty() || animation == embedded.get_anim_name(i)) { control->loop(true); controls.push_back(control); if (resolvedAnimation) *resolvedAnimation = embedded.get_anim_name(i); }
+    if (animation.empty() || animation == embedded.get_anim_name(i)) { control->loop(true); controls.push_back(control); if (resolvedAnimation && !animation.empty()) *resolvedAnimation = animation; }
   }
   if (!controls.empty()) return controls;
   auto characters = model.find_all_matches("**/+Character");

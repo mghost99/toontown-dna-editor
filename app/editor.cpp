@@ -269,6 +269,8 @@ int Editor::placePreviewed() {
     storage_.addCode(e.code, e.model, e.node, e.storageRel); loadedCodes_.insert(e.code);
     core::warn("placed " + e.code + " from " + e.storageRel + ", which this DNA's storage files do not load: the game will not show it unless that storage is added");
   }
+  if (previewAnimation_.empty() && !previewAnimations_.empty())
+    core::warn("placed " + e.code + " as a plain prop: its animations are embedded in the model, so no anim name is written");
   dna::Item it; it.kind = previewAnimation_.empty() ? "prop" : (e.root == "interactive_prop" ? "interactive_prop" : "anim_prop");
   it.code = e.code; it.name = e.code;
   it.visgroup = !selection.empty() ? doc.items[selection[0]].visgroup : (doc.visgroups.empty() ? "" : doc.visgroups[0]);
