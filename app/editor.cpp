@@ -233,7 +233,7 @@ bool Editor::openPreview(int ci) {
   if (ci < 0 || ci >= (int)catalog.size()) return false;
   ScopedTimer t("open prop preview");
   auto &e = catalog[ci];
-  assets::stopAnimations(previewAnimations_);
+  assets::stopAnimations(previewAnimations_); previewAnimation_.clear();
   if (!previewModel_.is_empty()) previewModel_.remove_node();
   NodePath src = assets::loadStoreNode(e.model, e.node);
   previewIdx_ = ci; pvYaw_ = 35; pvPitch_ = 20; pvZoom_ = 1;
@@ -243,7 +243,7 @@ bool Editor::openPreview(int ci) {
   if (doc.root) dna::walk(doc.root.get(), [&](const dna::XmlNode *node) {
     if (node->attr("code") == e.code && !node->attr("anim").empty()) animation = node->attr("anim");
   });
-  previewAnimations_ = assets::loopModel(previewModel_, e.model, animation);
+  previewAnimations_ = assets::loopModel(previewModel_, e.model, animation, &previewAnimation_);
   previewModel_.find_all_matches("**/+CollisionNode").hide();
   previewModel_.set_pos_hpr_scale(0, 0, 0, 0, 0, 0, 1, 1, 1);
   LPoint3 mn, mx;
@@ -269,9 +269,13 @@ int Editor::placePreviewed() {
     storage_.addCode(e.code, e.model, e.node, e.storageRel); loadedCodes_.insert(e.code);
     core::warn("placed " + e.code + " from " + e.storageRel + ", which this DNA's storage files do not load: the game will not show it unless that storage is added");
   }
-  dna::Item it; it.kind = "prop"; it.code = e.code; it.name = e.code;
+  dna::Item it; it.kind = previewAnimation_.empty() ? "prop" : (e.root == "interactive_prop" ? "interactive_prop" : "anim_prop");
+  it.code = e.code; it.name = e.code;
   it.visgroup = !selection.empty() ? doc.items[selection[0]].visgroup : (doc.visgroups.empty() ? "" : doc.visgroups[0]);
-  it.templateXml = "<prop name=\"" + e.code + "\" code=\"" + e.code + "\">\n\t<pos x=\"0.00\" y=\"0.00\" z=\"0.00\" />\n\t<nhpr h=\"0.00\" p=\"0.00\" r=\"0.00\" />\n</prop>";
+  it.templateXml = "<" + it.kind + " name=\"" + e.code + "\" code=\"" + e.code + "\"";
+  if (!previewAnimation_.empty()) it.templateXml += " anim=\"" + previewAnimation_ + "\"";
+  if (it.kind == "interactive_prop") it.templateXml += " cell_id=\"0\"";
+  it.templateXml += ">\n\t<pos x=\"0.00\" y=\"0.00\" z=\"0.00\" />\n\t<nhpr h=\"0.00\" p=\"0.00\" r=\"0.00\" />\n</" + it.kind + ">";
   LPoint3 p = placementPoint();
   it.xf.x = snapv(p[0]); it.xf.y = snapv(p[1]); it.xf.z = p[2];
   doc.items.push_back(it); int id = (int)doc.items.size() - 1;

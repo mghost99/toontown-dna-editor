@@ -315,11 +315,21 @@ int main(int argc, char **argv) {
     ed.duplicateSelected(); shot(tag + "_duplicated"); ed.deleteSelected(); shot(tag + "_dup_deleted");
     // palette preview + place
     int ci = 0; for (int i = 0; i < (int)ed.catalog.size(); i++) if (ed.catalog[i].code.find("pp_") == 0 || ed.catalog[i].code.find("prop_") == 0) { ci = i; break; }
+    bool animatedPreview = false;
+    for (const auto &item : ed.doc.items) {
+      if (!item.node || item.node->attr("anim").empty()) continue;
+      for (int i = 0; i < (int)ed.catalog.size(); ++i) if (ed.catalog[i].code == item.code) { ci = i; animatedPreview = true; break; }
+      if (animatedPreview) break;
+    }
     double pt = core::nowMs(); ed.openPreview(ci); frames(1); rep << "preview open (" << ed.catalog[ci].code << "): " << core::nowMs() - pt << " ms\n";
+    if (animatedPreview) {
+      rep << "scene animation controls: " << ed.scene.animations.size() << ", preview controls: " << ed.previewAnimationCount() << "\n";
+      if (ed.scene.animations.empty() || ed.previewAnimationCount() == 0) ++fails;
+    }
     ImGui::SetWindowFocus("Prop Preview"); shot(tag + "_preview"); ImGui::SetWindowFocus("Objects");
     int pid = ed.placePreviewed(); rep << "placed item " << pid << "\n"; shot(tag + "_placed");
     ed.select({pid}); frames(2);
-    bool renamed = editField("property:prop:name", "placed_editor_test");
+    bool renamed = editField("property:" + ed.doc.items[pid].kind + ":name", "placed_editor_test");
     bool renameOk = renamed && ed.doc.items[pid].name == "placed_editor_test";
     rep << "Inspector edits newly placed object: " << (renameOk ? "yes" : "NO") << "\n";
     if (!renameOk) ++fails;

@@ -15,7 +15,8 @@ void stopAnimations(std::vector<PT(AnimControl)> &controls) {
   for (auto &control : controls) control->stop();
   controls.clear();
 }
-std::vector<PT(AnimControl)> loopModel(NodePath model, const std::string &modelPath, const std::string &animation) {
+std::vector<PT(AnimControl)> loopModel(NodePath model, const std::string &modelPath, const std::string &animation, std::string *resolvedAnimation) {
+  if (resolvedAnimation) resolvedAnimation->clear();
   std::vector<PT(AnimControl)> controls;
   if (model.is_empty()) return controls;
   auto sequences = model.find_all_matches("**/+SequenceNode");
@@ -24,7 +25,7 @@ std::vector<PT(AnimControl)> loopModel(NodePath model, const std::string &modelP
   auto_bind(model.node(), embedded, ~0);
   for (int i = 0; i < embedded.get_num_anims(); ++i) {
     auto control = embedded.get_anim(i);
-    if (animation.empty() || animation == embedded.get_anim_name(i)) { control->loop(true); controls.push_back(control); }
+    if (animation.empty() || animation == embedded.get_anim_name(i)) { control->loop(true); controls.push_back(control); if (resolvedAnimation) *resolvedAnimation = embedded.get_anim_name(i); }
   }
   if (!controls.empty()) return controls;
   auto characters = model.find_all_matches("**/+Character");
@@ -69,6 +70,7 @@ std::vector<PT(AnimControl)> loopModel(NodePath model, const std::string &modelP
       if (control) { control->loop(true); controls.push_back(control); break; }
     }
   }
+  if (resolvedAnimation && !controls.empty()) *resolvedAnimation = fs::path(chosen).stem().string();
   return controls;
 }
 }

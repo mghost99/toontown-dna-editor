@@ -13,6 +13,16 @@ text DNA (`.dna`) and compiled DNA (`.pdna`). Native C++17 on the Panda3D engine
 
 * 3D view and 2D top-down map, click/box select, drag to move, Shift+drag to rotate, move/rotate/scale gizmo
   anchored on the object, snapping, reopens the last file on startup (View menu toggle), undo/redo, duplicate/delete, prop palette with preview, visgroup toggles.
+* Signs use fonts from the loaded storage, curved baselines, and per-letter transforms and colors. Edit a
+  whole sign line and its font code in the scrollable Inspector; the file keeps its per-letter structure.
+* Expand Inspector **Properties** to edit object and child properties, including newly placed objects,
+  titles, textures, colors, and baseline dimensions. Property and sign edits support undo/redo.
+* Animated props play in the scene and palette preview. Placing an animated preview keeps its animation.
+* **F5** or **View > Walk through map** starts a Toon walker. Point at the 3D view: arrow keys move/turn,
+  **Ctrl** jumps. F5 returns to the previous editing camera. The walker uses Toon models from your resources.
+* **View > Camera speed** sets a saved wheel speed in feet per notch. Hold Shift for finer movement.
+  Scrolling remains independent of map size. View menu toggles hide the map, Inspector, and other panels;
+  **F2** opens the organized, scrollable shortcuts panel.
 * Saves only what you changed: unchanged text, comments and ordering stay as they were.
 * Formats (detected by extension, then by content):
 
@@ -101,11 +111,41 @@ with the `PDNA` header.
 
 ## Limits
 
+* Older PDNA files may store sign lettering as baked BAM geometry. The editor renders and preserves that
+  geometry in XML/DNA exports. Its original words and font are unavailable; entering a replacement line
+  creates editable text. Compiling baked geometry into the newer PDNA layout is refused to prevent losing
+  the signs. Save as XML/DNA or replace those sign lines before compiling PDNA.
+
 * `.pdna` stores fixed-point values: 0.01 for positions/angles/scales, 1/255 for colours.
 * Elements with no `.pdna` encoding (for example `curve_point` or server-specific tags) are left out of compiled
   output; the editor logs which.
 * Decompiling then recompiling a storage `.pdna` keeps every entry but may change their order.
 * Converting XML to `.dna` keeps the data but not XML comments.
+
+## Verification
+
+    cmake --build build
+    ctest --test-dir build --output-on-failure
+
+The format tests cover XML/DNA/PDNA sign editing, Unicode, quotes, spaces, pending additions/deletions,
+property undo/redo, and empty storage files. Scene tests cover font registration, curved lettering,
+per-letter properties, and zero-scale source objects without requiring game assets.
+
+Optional real-resource checks use your local files (none are bundled):
+
+    DNAED_TEST_RES=/path/to/resources ./build/tests/render_tests build/tests/render-tmp
+    DNAED_TEST_OLD_PDNA=/path/to/older-map.pdna ./build/tests/render_tests build/tests/render-tmp
+
+`DNAED_TEST_RES` exercises Toon assembly, movement, wall collisions, jumping and landing. Add
+`DNAED_TEST_ANIM_MODEL` (resource-relative rig path) and `DNAED_TEST_ANIM_NAME` (animation filename without
+extension) to check external prop animation binding and playback.
+
+The GUI test injects actual mouse/key/text events, renders screenshots, and saves into a scratch directory:
+
+    ./build/app/dna-editor --res /path/to/resources --selftest build/qa /path/to/map.pdna
+
+On Linux, prefix it with `xvfb-run -a` to use a private display. It checks Inspector edits, undo/redo,
+placement, animation controls, fractional scrolling, walking shortcuts, and save/reopen.
 
 ## Code layout
 
