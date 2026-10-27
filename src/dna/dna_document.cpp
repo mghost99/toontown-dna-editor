@@ -331,7 +331,7 @@ bool Document::save(std::string *err, SaveStats *st, const std::string &outPath)
   // sanity: the result must still parse to the same root tag and keep every element balanced
   int perr = 0;
   auto chk = fmt == Format::Xml ? parseXml(data) : parseDnaText(data, &perr);
-  if (chk->children.empty() || perr || (root->children.size() && chk->children[0]->tag != root->children[0]->tag)) {
+  if (perr || (!root->children.empty() && (chk->children.empty() || chk->children[0]->tag != root->children[0]->tag))) {
     if (err) *err = std::string("refusing to save: patched ") + formatName(fmt) + " does not parse back"; return false;
   }
   if (tf == Format::Pdna) {

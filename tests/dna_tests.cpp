@@ -213,6 +213,17 @@ int main(int argc, char **argv) {
     CHECK(history.undo(doc) && doc.items[id].name == "before");
     CHECK(history.redo(doc) && doc.items[id].name == "after");
   }
+  {
+    std::string bytes, error;
+    auto empty = dna::parseDnaText("");
+    CHECK(dna::compilePdna(empty.get(), "", &bytes, &error));
+    std::string input = T + "/empty_storage.pdna"; CHECK(dna::writeFile(input, bytes));
+    dna::Document doc; CHECK(load(doc, input));
+    CHECK(save(doc, T + "/empty_storage.xml"));
+    CHECK(save(doc, T + "/empty_storage.dna"));
+    CHECK(save(doc, T + "/empty_storage_copy.pdna"));
+    CHECK(dna::readFile(T + "/empty_storage_copy.pdna") == bytes);
+  }
   printf("%d/%d checks passed\n", checks - fails, checks);
   return fails ? 1 : 0;
 }
