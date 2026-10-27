@@ -1,8 +1,8 @@
 // Windows resources: exe icon + version info
 1 ICON "../assets/branding/dna-editor.ico"
 1 VERSIONINFO
-FILEVERSION 0,0,3,0
-PRODUCTVERSION 0,0,3,0
+FILEVERSION 0,0,4,0
+PRODUCTVERSION 0,0,4,0
 BEGIN
   BLOCK "StringFileInfo"
   BEGIN
@@ -11,8 +11,8 @@ BEGIN
       VALUE "CompanyName", "mghost99"
       VALUE "FileDescription", "DNA Editor"
       VALUE "ProductName", "DNA Editor"
-      VALUE "FileVersion", "0.0.3"
-      VALUE "ProductVersion", "0.0.3"
+      VALUE "FileVersion", "0.0.4"
+      VALUE "ProductVersion", "0.0.4"
     END
   END
   BLOCK "VarFileInfo"
