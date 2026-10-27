@@ -38,6 +38,10 @@ int main(int argc, char **argv) {
   line = scene.geom.find("**/typesetter");
   if (line.get_num_children() != 2 || std::fabs(line.get_child(0).get_z() - 2) > 0.001f) return 1;
   if (!line.get_child(0).has_color_scale()) return 1;
+  doc.text = "prop \"hidden\" [ code [ \"DCS\" ] scale [ 0 -2 0 ] ]";
+  doc.root = dna::parseDnaText(doc.text); scene.build(doc, storage);
+  NodePath hidden = scene.geom.find("**/hidden");
+  if (hidden.is_empty() || hidden.get_sx() <= 0 || hidden.get_sz() <= 0 || hidden.get_sy() != -2) return 1;
   printf("storage fonts, curved text, glyph scale, per-letter properties and Unicode passed\n");
   if (const char *resources = std::getenv("DNAED_TEST_RES")) {
     assets::ModelCache::get().setResRoot(resources);

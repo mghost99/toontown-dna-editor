@@ -25,7 +25,7 @@ static std::string unb64(const std::string &in) {
   }
   return o;
 }
-static double fl(const std::string &s, double d) { if (s.empty()) return d; char *e; double v = strtod(s.c_str(), &e); return e == s.c_str() ? d : v; }
+static double fl(const std::string &s, double d) { if (s.empty()) return d; char *e; double v = strtod(s.c_str(), &e); return e == s.c_str() || !std::isfinite(v) ? d : v; }
 
 Scene::Scene() { world = NodePath("world"); geom = world.attach_new_node("dna"); markers = world.attach_new_node("markers"); }
 
@@ -59,7 +59,10 @@ static void applyProp(const dna::XmlNode *n, NodePath &target) {
   if (t == "scale" && target.get_tag("DNARoot") == "baseline") return;
   if (t == "pos") target.set_pos(fl(n->attr("x"), 0), fl(n->attr("y"), 0), fl(n->attr("z"), 0));
   else if (t == "hpr" || t == "nhpr") target.set_hpr(fl(n->attr("h"), 0), fl(n->attr("p"), 0), fl(n->attr("r"), 0));
-  else if (t == "scale") target.set_scale(fl(n->attr("x"), 1), fl(n->attr("y"), 1), fl(n->attr("z"), 1));
+  else if (t == "scale") {
+    auto safe = [&](const char *axis) { double value = fl(n->attr(axis), 1); return value == 0 ? 1e-3 : value; };
+    target.set_scale(safe("x"), safe("y"), safe("z"));
+  }
   else if (t == "color") target.set_color_scale(fl(n->attr("r"), 1), fl(n->attr("g"), 1), fl(n->attr("b"), 1), fl(n->attr("a"), 1));
 }
 static bool isProp(const std::string &t) { return t == "pos" || t == "hpr" || t == "nhpr" || t == "scale" || t == "color"; }
