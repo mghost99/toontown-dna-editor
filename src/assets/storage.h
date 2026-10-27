@@ -32,6 +32,7 @@ class Storage {
   // Registers the store_node / store_texture entries of these storage files (no model loading yet).
   void addFiles(const std::vector<std::string> &rels);
   const std::vector<std::string> &files() const { return files_; }
+  std::string modelPath(const std::string &code) const { auto it = nodes_.find(code); return it == nodes_.end() ? "" : it->second.model; }
   bool hasCode(const std::string &code) const { return nodes_.count(code) > 0; }
   NodePath findNode(const std::string &code);       // loads on first use; empty if unknown/bad
   PT(TextFont) findFont(const std::string &code);

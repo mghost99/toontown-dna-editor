@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <cstdio>
 #include <cmath>
+#include "clockObject.h"
+#include <cstdlib>
 
 int main(int argc, char **argv) {
   PandaFramework framework; framework.open_framework(argc, argv);
@@ -34,5 +36,22 @@ int main(int argc, char **argv) {
   if (line.get_num_children() != 2 || std::fabs(line.get_child(0).get_z() - 2) > 0.001f) return 1;
   if (!line.get_child(0).has_color_scale()) return 1;
   printf("storage fonts, curved text, glyph scale, per-letter properties and Unicode passed\n");
+  if (const char *resources = std::getenv("DNAED_TEST_RES")) {
+    const char *model = std::getenv("DNAED_TEST_ANIM_MODEL"), *animation = std::getenv("DNAED_TEST_ANIM_NAME");
+    if (model && animation) {
+      assets::ModelCache::get().setResRoot(resources);
+      get_model_path().prepend_directory(Filename(resources));
+      NodePath rig = assets::ModelCache::get().load(model);
+      auto controls = assets::loopModel(rig, model, animation);
+      if (controls.empty()) { printf("external animation failed to bind\n"); return 1; }
+      auto clock = ClockObject::get_global_clock();
+      clock->set_mode(ClockObject::M_non_real_time); clock->set_dt(0.1);
+      double before = controls.front()->get_full_fframe();
+      for (int i = 0; i < 10; ++i) clock->tick();
+      if (controls.front()->get_full_fframe() <= before) return 1;
+      assets::stopAnimations(controls);
+      printf("external prop animation binds, advances and stops\n");
+    }
+  }
   return 0;
 }

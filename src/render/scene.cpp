@@ -30,6 +30,7 @@ static double fl(const std::string &s, double d) { if (s.empty()) return d; char
 Scene::Scene() { world = NodePath("world"); geom = world.attach_new_node("dna"); markers = world.attach_new_node("markers"); }
 
 void Scene::clear() {
+  assets::stopAnimations(animations);
   geom.remove_node(); markers.remove_node();
   geom = world.attach_new_node("dna"); markers = world.attach_new_node("markers");
   itemNodes.clear(); visgroupNodes.clear(); unknownTags_.clear(); stats_nodes = 0;
@@ -67,6 +68,7 @@ static bool hasEditableDesc(const dna::XmlNode *n) {
 }
 
 static PT(TextFont) signFont(const std::string &code, assets::Storage &st) {
+  if (code.empty()) return TextNode::get_default_font();
   PT(TextFont) stored = st.findFont(code);
   if (stored && stored->is_valid()) return stored;
   std::string path = "phase_3/fonts/Humanist.ttf";
@@ -294,6 +296,10 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
     return;
   }
   if (np.is_empty()) return;
+  if (t == "anim_prop" || t == "interactive_prop" || t == "anim_building") {
+    auto controls = assets::loopModel(np, st.modelPath(n->attr("code")), n->attr("anim"));
+    animations.insert(animations.end(), controls.begin(), controls.end());
+  }
   stats_nodes++;
   np.set_tag("DNARoot", t);
   int eid = -1;

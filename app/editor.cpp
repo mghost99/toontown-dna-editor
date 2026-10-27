@@ -230,11 +230,17 @@ bool Editor::openPreview(int ci) {
   if (ci < 0 || ci >= (int)catalog.size()) return false;
   ScopedTimer t("open prop preview");
   auto &e = catalog[ci];
+  assets::stopAnimations(previewAnimations_);
   if (!previewModel_.is_empty()) previewModel_.remove_node();
   NodePath src = assets::loadStoreNode(e.model, e.node);
   previewIdx_ = ci; pvYaw_ = 35; pvPitch_ = 20; pvZoom_ = 1;
   if (src.is_empty()) { core::warn("preview: cannot load " + e.code + " (" + e.model + ")"); previewModel_ = previewRoot_.attach_new_node("empty"); previewSize_ = LVecBase3(0); previewTris_ = 0; return false; }
   previewModel_ = src.copy_to(previewRoot_);
+  std::string animation;
+  if (doc.root) dna::walk(doc.root.get(), [&](const dna::XmlNode *node) {
+    if (node->attr("code") == e.code && !node->attr("anim").empty()) animation = node->attr("anim");
+  });
+  previewAnimations_ = assets::loopModel(previewModel_, e.model, animation);
   previewModel_.find_all_matches("**/+CollisionNode").hide();
   previewModel_.set_pos_hpr_scale(0, 0, 0, 0, 0, 0, 1, 1, 1);
   LPoint3 mn, mx;

@@ -48,6 +48,7 @@ class Editor {
   assets::Storage storage_;
   render::Lighting light_;
   NodePath previewRoot_, previewModel_;
+  std::vector<PT(AnimControl)> previewAnimations_;
   int previewIdx_ = -1; LVecBase3 previewSize_; int previewTris_ = 0; float pvYaw_ = 35, pvPitch_ = 20, pvZoom_ = 1;
   ui::PaletteState pal_; ui::OutlinerState out_;
   bool showInputDebug_ = getenv("DNAED_INPUT_DEBUG") != nullptr; std::string hoveredView_ = "none";

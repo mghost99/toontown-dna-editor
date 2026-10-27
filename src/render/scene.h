@@ -2,6 +2,7 @@
 // NodePath per editable item so edits only touch that node's transform -- the rest of the scene is never rebuilt.
 #pragma once
 #include "assets/storage.h"
+#include "assets/animation.h"
 #include "dna/dna_document.h"
 #include "nodePath.h"
 #include <map>
@@ -28,6 +29,7 @@ class Scene {
   LPoint3 boundsMin, boundsMax;
   void computeBounds();
   int stats_nodes = 0;
+  std::vector<PT(AnimControl)> animations;
  private:
   void gen(const dna::XmlNode *n, NodePath parent, const std::string &src, assets::Storage &st,
            const std::map<const dna::XmlNode *, int> *ids, float *wallHeight, const dna::XmlNode *flat);
