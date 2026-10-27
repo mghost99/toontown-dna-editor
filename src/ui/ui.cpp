@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "dna/sign_fonts.h"
 #include <functional>
 #include "core/log.h"
 #include "imgui.h"
@@ -121,14 +122,6 @@ bool outlinerPanel(const dna::Document &doc, std::vector<int> &sel, OutlinerStat
   return changed;
 }
 
-static const char *signFace(const std::string &code) {
-  if (code == "humanist" || code == "interface" || code == "interfaceFont" || code == "impact") return "ImpressBT (Impact)";
-  if (code == "mickey" || code == "sign" || code == "classic") return "Mickey";
-  if (code == "fancy" || code == "TT_Comedy") return "Comedy";
-  if (code == "suit" || code == "cog") return "Remington";
-  if (code == "minnie" || code == "TT_Minnie") return "Minnie";
-  return code.empty() ? "default" : code.c_str();
-}
 
 std::vector<InspectorField> inspectorFields;
 static void recordField(const std::string &id) {
@@ -207,7 +200,7 @@ int inspectorPanel(dna::Item *it, int index, dna::Xform &x, const dna::Document 
           sign->node = lines[i].baseline; sign->key = "code"; sign->value = font; sign->commit = true;
         }
         ImGui::PopID();
-        info("Fallback", signFace(lines[i].font));
+        info("Fallback", dna::fallbackSignFontName(lines[i].font).c_str());
         ImGui::TextDisabled("Text");
         ImGui::SetNextItemWidth(-1);
         char buf[512];

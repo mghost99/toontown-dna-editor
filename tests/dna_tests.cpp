@@ -2,6 +2,7 @@
 // .pdna compile/decompile, encrypted-.pdna password flow (with a stand-in cipher). Run: dna_tests SAMPLES_DIR TMP_DIR
 #include "dna/dna_document.h"
 #include "dna/dna_formats.h"
+#include "dna/sign_fonts.h"
 #include "commands/commands.h"
 #include <cmath>
 #include <cstdint>
@@ -223,6 +224,13 @@ int main(int argc, char **argv) {
     CHECK(save(doc, T + "/empty_storage.dna"));
     CHECK(save(doc, T + "/empty_storage_copy.pdna"));
     CHECK(dna::readFile(T + "/empty_storage_copy.pdna") == bytes);
+  }
+  {   // sign font codes: "humanist" is the Humanist face, never ImpressBT
+    CHECK(dna::fallbackSignFontPath("humanist") == "phase_3/fonts/Humanist.ttf");
+    CHECK(dna::fallbackSignFontName("humanist") == "Humanist");
+    CHECK(dna::fallbackSignFontPath("impact") == "phase_3/fonts/ImpressBT.ttf");
+    CHECK(dna::fallbackSignFontPath("DD_Portago") == "phase_3/fonts/Portago.ttf");
+    CHECK(dna::fallbackSignFontPath("unknowncode").empty());
   }
   printf("%d/%d checks passed\n", checks - fails, checks);
   return fails ? 1 : 0;

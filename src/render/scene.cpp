@@ -1,5 +1,6 @@
 #include "scene.h"
 #include "core/log.h"
+#include "dna/sign_fonts.h"
 #include "geomNode.h"
 #include "geomTriangles.h"
 #include "geomVertexWriter.h"
@@ -14,6 +15,7 @@
 #include <algorithm>
 #include <map>
 #include <set>
+#include <vector>
 
 namespace render {
 
@@ -70,27 +72,40 @@ static bool hasEditableDesc(const dna::XmlNode *n) {
   bool f = false; dna::walk(n, [&](const dna::XmlNode *c) { if (dna::kEditable.count(c->tag)) f = true; }); return f;
 }
 
+// Sign fonts come from the store_font entries of the loaded storage files, exactly as the game
+// resolves them. A built-in path is used only for codes no storage declares, and always with a warning.
 static PT(TextFont) signFont(const std::string &code, assets::Storage &st) {
   if (code.empty()) return TextNode::get_default_font();
-  PT(TextFont) stored = st.findFont(code);
-  if (stored && stored->is_valid()) return stored;
-  std::string path = "phase_3/fonts/Humanist.ttf";
-  if (code == "mickey" || code == "sign" || code == "classic") path = "phase_3/fonts/MickeyFont.bam";
-  else if (code == "fancy" || code == "TT_Comedy") path = "phase_3/fonts/Comedy.ttf";
-  // "humanist" is the building-sign face. Toontown draws it with ImpressBT, the Impact-style font.
-  else if (code == "humanist" || code == "interface" || code == "interfaceFont" || code == "impact") path = "phase_3/fonts/ImpressBT.ttf";
-  else if (code == "suit" || code == "cog") path = "phase_3/fonts/vtRemingtonPortable.ttf";
-  else if (code == "minnie" || code == "TT_Minnie") path = "phase_3/fonts/MinnieFont.ttf";
-  else {
-    auto us = code.find('_');
-    if (us != std::string::npos) {
-      std::string name = code.substr(us + 1);
-      if (!name.empty() && name.find_first_of("/\\.") == std::string::npos) path = "phase_3/fonts/" + name + ".ttf";
+  static std::set<std::string> warned;
+  auto warnOnce = [](const std::string &m) { if (warned.insert(m).second) core::warn(m); };
+  auto lastResort = []() -> PT(TextFont) {
+    PT(TextFont) f = FontPool::load_font("phase_3/fonts/MickeyFont.bam");
+    if (f && f->is_valid()) return f;
+    return TextNode::get_default_font();
+  };
+  std::string declared = st.fontPath(code);
+  if (!declared.empty()) {
+    // Storage paths may omit the extension ("phase_3/fonts/MickeyFont"); the game then loads it
+    // with its default model extension (.bam in Clash, .egg in stock Panda3D), so try both.
+    std::vector<std::string> candidates = {declared};
+    if (Filename(declared).get_extension().empty()) { candidates.push_back(declared + ".bam"); candidates.push_back(declared + ".egg"); }
+    for (auto &path : candidates) {
+      PT(TextFont) f = FontPool::load_font(path);
+      if (f && f->is_valid()) return f;
     }
+    warnOnce("font code '" + code + "' is declared as " + declared + " in storage, but that file could not be loaded; using the last-resort font");
+    return lastResort();
   }
+  std::string path = dna::fallbackSignFontPath(code);
+  if (path.empty()) {
+    warnOnce("font code '" + code + "' has no store_font entry in the loaded storage and no built-in mapping; using the last-resort font");
+    return lastResort();
+  }
+  warnOnce("font code '" + code + "' has no store_font entry in the loaded storage; using built-in " + path);
   PT(TextFont) f = FontPool::load_font(path);
-  if (!f || !f->is_valid()) f = FontPool::load_font("phase_3/fonts/MickeyFont.bam");
-  return f;
+  if (f && f->is_valid()) return f;
+  warnOnce("built-in font " + path + " for code '" + code + "' could not be loaded; using the last-resort font");
+  return lastResort();
 }
 
 // Baseline dimensions are diameters in world units. Glyph scales belong to the
