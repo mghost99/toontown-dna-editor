@@ -11,6 +11,7 @@
 #include "textNode.h"
 #include "fontPool.h"
 #include <cmath>
+#include <algorithm>
 #include <map>
 #include <set>
 
@@ -54,6 +55,7 @@ static void applyProp(const dna::XmlNode *n, NodePath &target) {
   // A flat wall's pos/scale are the DNANode defaults. Its real place and size are the stacked
   // height and the building width, set below. Letting pos/scale through drops every story on the ground.
   if ((t == "pos" || t == "scale") && target.has_tag("dna_wall")) return;
+  if (t == "scale" && target.get_tag("DNARoot") == "baseline") return;
   if (t == "pos") target.set_pos(fl(n->attr("x"), 0), fl(n->attr("y"), 0), fl(n->attr("z"), 0));
   else if (t == "hpr" || t == "nhpr") target.set_hpr(fl(n->attr("h"), 0), fl(n->attr("p"), 0), fl(n->attr("r"), 0));
   else if (t == "scale") target.set_scale(fl(n->attr("x"), 1), fl(n->attr("y"), 1), fl(n->attr("z"), 1));
@@ -86,49 +88,106 @@ static PT(TextFont) signFont(const std::string &code, assets::Storage &st) {
   return f;
 }
 
-// Same layout as the game's sign typesetter: glyphs in font units, centered, then bent onto the baseline ellipse.
+// Baseline dimensions are diameters in world units. Glyph scales belong to the
+// letters, while centering and curvature belong to the unscaled baseline.
 static void typesetBaseline(NodePath np, const dna::XmlNode *n, const std::string &src, assets::Storage &st) {
-  std::string letters;
-  for (auto &c : n->children) if (c->tag == "text") letters += dna::nodeText(c.get(), src);
-  if (letters.empty()) return;
-  float sx = 1, sz = 1;
-  for (auto &c : n->children) if (c->tag == "scale") { sx = (float)fl(c->attr("x"), 1); sz = (float)fl(c->attr("z"), 1); }
-  if (sx == 0) sx = 1;
-  if (sz == 0) sz = 1;
-  float kern = (float)fl(n->attr("kern"), 0), wiggle = (float)fl(n->attr("wiggle"), 0);
-  float stumble = (float)fl(n->attr("stumble"), 0), stomp = (float)fl(n->attr("stomp"), 0), indent = (float)fl(n->attr("indent"), 0);
-  float width = (float)fl(n->attr("width"), 0), height = (float)fl(n->attr("height"), 0);
-  std::string flags = n->attr("flags");
-  PT(TextFont) font = signFont(n->attr("code"), st);
+  const float deg = float(M_PI) / 180.f;
+  const float width = fl(n->attr("width"), 0), height = fl(n->attr("height"), 0);
+  const bool curved = width != 0 || height != 0, inner = width < 0 || height < 0;
+  const float kern = fl(n->attr("kern"), 0), stumble = fl(n->attr("stumble"), 0);
+  const float stomp = fl(n->attr("stomp"), 0), wiggle = fl(n->attr("wiggle"), 0);
+  const float indent = fl(n->attr("indent"), 0);
+  const auto flags = n->attr("flags");
+  LVecBase3 scale(1, 1, 1);
+  if (auto c = n->child("scale")) scale.set(fl(c->attr("x"), 1), fl(c->attr("y"), 1), fl(c->attr("z"), 1));
+  // Baseline scale sizes the glyphs, not the curve or the baseline position.
   NodePath root = np.attach_new_node("typesetter");
-  root.set_scale(1 / sx, 1, 1 / sz);
-  float x = 0;
-  for (size_t i = 0; i < letters.size(); ++i) {
-    PT(TextNode) tn = new TextNode("glyph");
-    if (font && font->is_valid()) tn->set_font(font);
-    tn->set_text(std::string(1, letters[i]));
-    if (i == 0 && flags.find('b') != std::string::npos) tn->set_text_scale(1.5f);
-    NodePath g = root.attach_new_node(tn);
-    g.set_scale(sx, 1, sz);
-    g.set_two_sided(true);
-    g.set_depth_write(false);
-    g.set_depth_offset(70);
-    if (i & 1) { g.set_pos(x + stumble, 0, stomp); g.set_r(-wiggle); }
-    else { g.set_pos(x - stumble, 0, -stomp); g.set_r(wiggle); }
-    x += tn->get_width() * sx + kern;
-  }
-  for (int i = 0; i < root.get_num_children(); ++i) { NodePath c = root.get_child(i); c.set_x(c.get_x() - x / 2); }
-  if (width != 0 && height != 0) {
-    float a = width / 2, b = height / 2;
-    for (int i = 0; i < root.get_num_children(); ++i) {
-      NodePath node = root.get_child(i);
-      float theta = node.get_x() / b + indent * float(M_PI) / 180;
-      float ex = std::sin(theta) * a, ey = (std::cos(theta) - 1) * b, dev = node.get_y();
-      float r = std::sqrt(ex * ex + ey * ey);
-      if (r > 0) { ex *= (r + dev) / r; ey *= (r + dev) / r; }
-      node.set_pos(ex, -0.05f, ey);
-      node.set_r(node, theta * 180 / float(M_PI));
+  std::vector<NodePath> glyphs;
+  float cursor = 0, priorCursor = 0, totalWidth = 0;
+  int counter = 0;
+  bool wordStart = true;
+  auto add = [&](const dna::XmlNode *entry, const std::string &letter) {
+    NodePath glyph;
+    float glyphWidth = 0;
+    float bigger = flags.find('b') != std::string::npos && wordStart && letter != " " ? 1.5f : 1.f;
+    wordStart = letter == " ";
+    if (entry->tag == "graphic") {
+      NodePath model = st.findNode(entry->attr("code"));
+      if (model.is_empty()) return;
+      glyph = model.copy_to(root);
+      LPoint3 lo, hi;
+      if (glyph.calc_tight_bounds(lo, hi)) glyphWidth = hi[0] - lo[0];
+      glyphWidth = fl(entry->attr("width"), glyphWidth);
+    } else {
+      PT(TextNode) tn = new TextNode("glyph");
+      PT(TextFont) font = signFont(entry->attr("code", n->attr("code")), st);
+      if (font && font->is_valid()) tn->set_font(font);
+      tn->set_text(letter);
+      if (flags.find('c') != std::string::npos) {
+        auto text = tn->get_wtext(); for (auto &ch : text) ch = TextEncoder::unicode_toupper(ch); tn->set_wtext(text);
+      }
+      if (flags.find('d') != std::string::npos) tn->set_shadow(0.03f, 0.03f);
+      glyphWidth = tn->get_width();
+      glyph = root.attach_new_node(tn);
     }
+    LVector3 pos(0, 0, 0), hpr(0, 0, 0), letterScale(1, 1, 1);
+    if (auto c = entry->child("pos")) pos.set(fl(c->attr("x"), 0), fl(c->attr("y"), 0), fl(c->attr("z"), 0));
+    auto rot = entry->child("nhpr"); if (!rot) rot = entry->child("hpr");
+    if (rot) hpr.set(fl(rot->attr("h"), 0), fl(rot->attr("p"), 0), fl(rot->attr("r"), 0));
+    if (auto c = entry->child("scale")) letterScale.set(fl(c->attr("x"), 1), fl(c->attr("y"), 1), fl(c->attr("z"), 1));
+    letterScale.set(letterScale[0] * scale[0] * bigger, letterScale[1] * scale[1], letterScale[2] * scale[2] * bigger);
+    float advance = glyphWidth * letterScale[0], alternating = counter & 1 ? 1.f : -1.f;
+    if (curved) {
+      float a = width / 2, b = height / 2;
+      // A one-axis curve is legal. Keep the radial division finite at its tip.
+      float offset = std::fabs(a) > 1e-5f ? (width < 0 ? pos[0] : -pos[0]) / a : 0;
+      float indentation = (width < 0 ? -indent : indent) * deg;
+      float angle = cursor + float(M_PI) / 2 + indentation + offset;
+      float delta = (pos[2] + alternating * stomp) * (width < 0 ? -1.f : 1.f);
+      pos[0] = (a + delta) * std::cos(angle);
+      pos[2] = (b + delta) * std::sin(angle);
+      hpr[2] -= cursor / deg + indentation / deg + alternating * wiggle;
+      float radius = std::max(std::hypot(pos[0], pos[2]), 1e-5f);
+      if (width < 0) priorCursor = cursor;
+      float next = cursor - 2 * std::asin(std::clamp(advance / (2 * radius), -1.f, 1.f));
+      if (width >= 0) priorCursor = next;
+      next -= 2 * std::asin(std::clamp((kern - alternating * stumble) / (2 * radius), -1.f, 1.f));
+      if (width >= 0) hpr[2] -= (next - cursor) / (2 * deg);
+      cursor = next;
+    } else {
+      pos[0] += totalWidth + counter * kern + alternating * stumble;
+      pos[2] += alternating * stomp;
+      hpr[2] -= alternating * wiggle;
+      totalWidth += advance;
+    }
+    glyph.set_pos_hpr_scale(pos, hpr, letterScale);
+    if (auto c = entry->child("color")) applyProp(c, glyph);
+    glyph.set_two_sided(true); glyph.set_depth_write(false); glyph.set_depth_offset(70);
+    glyphs.push_back(glyph); ++counter;
+  };
+  std::vector<const dna::XmlNode *> entries;
+  for (auto &c : n->children) if (c->tag == "text" || c->tag == "graphic") entries.push_back(c.get());
+  if (inner) std::reverse(entries.begin(), entries.end());
+  for (auto entry : entries) {
+    if (entry->tag == "graphic") { add(entry, ""); continue; }
+    // UTF-8 code points stay together; a merged PDNA line and per-letter DNA
+    // must produce identical glyphs and curvature.
+    std::string text = dna::nodeText(entry, src);
+    std::vector<std::string> letters;
+    for (size_t i = 0; i < text.size();) {
+      size_t end = i + 1;
+      while (end < text.size() && ((unsigned char)text[end] & 0xc0) == 0x80) ++end;
+      letters.push_back(text.substr(i, end - i)); i = end;
+    }
+    if (inner) std::reverse(letters.begin(), letters.end());
+    for (auto &letter : letters) add(entry, letter);
+  }
+  if (curved) {
+    root.set_z(-height / 2);
+    root.set_r(priorCursor / (2 * deg));
+  } else if (counter) {
+    float finalGap = (counter - 1) * kern + ((counter - 1) & 1 ? stumble : -stumble);
+    root.set_x(-(totalWidth + finalGap) / 2);
   }
 }
 
@@ -223,11 +282,7 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
       NodePath g = NodePath::decode_from_bam_stream(std::move(v));
       if (!g.is_empty()) { g.reparent_to(np); g.set_two_sided(true); g.set_depth_offset(60); }
     }
-    for (auto &c : n->children) if (c->tag == "graphic") {   // logo on the sign, e.g. the Mickey head
-      NodePath g = st.findNode(c->attr("code"));
-      if (!g.is_empty()) { NodePath gp = g.copy_to(np); gp.set_two_sided(true); gp.set_depth_offset(55); }
-    }
-    if (np.get_num_children() == 0 || np.find("**/typesetter").is_empty()) typesetBaseline(np, n, src, st);
+    if (!n->child("text_geom")) typesetBaseline(np, n, src, st);
   } else if (t == "text_geom" || t == "text" || t == "graphic" || t == "title" || t == "texture" ||
              t == "battle_cell" || t == "suit_edge" || t == "store_suit_point" || t == "curve_point" ||
              t == "prop_list") {
