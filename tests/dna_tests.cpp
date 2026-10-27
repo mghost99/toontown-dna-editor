@@ -225,6 +225,19 @@ int main(int argc, char **argv) {
     CHECK(save(doc, T + "/empty_storage_copy.pdna"));
     CHECK(dna::readFile(T + "/empty_storage_copy.pdna") == bytes);
   }
+  {
+    std::string src = "group \"old\" [ prop \"sample\" [ sign [ baseline [ text_geom [ \"YWJj\" ] ] ] ] ]";
+    auto tree = dna::parseDnaText(src);
+    const dna::XmlNode *geometry = nullptr;
+    dna::walk(tree.get(), [&](const dna::XmlNode *n) { if (n->tag == "text_geom") geometry = n; });
+    CHECK(geometry && dna::nodeText(geometry, src) == "YWJj");
+    std::string xml = dna::xmlDocument(tree.get(), src);
+    auto back = dna::parseXml(xml);
+    std::string dna = dna::dnaDocument(back.get(), xml);
+    CHECK(dna.find("text_geom [ \"YWJj\" ]") != std::string::npos);
+    std::string bytes, error; CHECK(!dna::compilePdna(tree.get(), src, &bytes, &error));
+    CHECK(error.find("baked sign geometry") != std::string::npos);
+  }
   {   // sign font codes: "humanist" is the Humanist face, never ImpressBT
     CHECK(dna::fallbackSignFontPath("humanist") == "phase_3/fonts/Humanist.ttf");
     CHECK(dna::fallbackSignFontName("humanist") == "Humanist");

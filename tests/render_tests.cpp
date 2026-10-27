@@ -43,6 +43,17 @@ int main(int argc, char **argv) {
   NodePath hidden = scene.geom.find("**/hidden");
   if (hidden.is_empty() || hidden.get_sx() <= 0 || hidden.get_sz() <= 0 || hidden.get_sy() != -2) return 1;
   printf("storage fonts, curved text, glyph scale, per-letter properties and Unicode passed\n");
+  if (const char *fixture = std::getenv("DNAED_TEST_OLD_PDNA")) {
+    dna::Document old; std::string error;
+    if (!old.load(fixture, std::filesystem::path(fixture).parent_path().string(), &error)) return 1;
+    const dna::XmlNode *baked = nullptr;
+    dna::walk(old.root.get(), [&](const dna::XmlNode *node) { if (node->tag == "baseline" && node->child("text_geom")) baked = node; });
+    if (!baked) { printf("no baked sign fixture found\n"); return 1; }
+    doc.text = dna::toXmlText(baked, old.text, 0); doc.root = dna::parseXml(doc.text);
+    scene.build(doc, storage);
+    if (scene.geom.find_all_matches("**/+GeomNode").is_empty()) { printf("baked sign did not generate geometry\n"); return 1; }
+    printf("older PDNA baked sign geometry renders\n");
+  }
   if (const char *resources = std::getenv("DNAED_TEST_RES")) {
     assets::ModelCache::get().setResRoot(resources);
     get_model_path().prepend_directory(Filename(resources));

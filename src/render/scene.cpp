@@ -11,8 +11,11 @@
 #include "compress_string.h"
 #include "textNode.h"
 #include "fontPool.h"
+#include "bamFile.h"
+#include <sstream>
 #include <cmath>
 #include <algorithm>
+#include <cstdint>
 #include <map>
 #include <set>
 #include <vector>
@@ -20,7 +23,7 @@
 namespace render {
 
 static std::string unb64(const std::string &in) {
-  std::string o; int v = 0, b = -8;
+  std::string o; uint32_t v = 0; int b = -8;
   for (unsigned char c : in) {
     int d = c >= 'A' && c <= 'Z' ? c - 'A' : c >= 'a' && c <= 'z' ? c - 'a' + 26 : c >= '0' && c <= '9' ? c - '0' + 52 : c == '+' ? 62 : c == '/' ? 63 : -1;
     if (d < 0) continue; v = (v << 6) + d; b += 6; if (b >= 0) { o += char((v >> b) & 255); b -= 8; }
@@ -298,8 +301,15 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
     for (auto &c : n->children) if (c->tag == "text_geom") {   // older .pdna: pre-rendered text model (zlib'd BAM)
       std::string raw = decompress_string(unb64(c->text(src)));
       if (raw.empty()) continue;
-      vector_uchar v; v.insert(v.end(), (const unsigned char *)raw.data(), (const unsigned char *)raw.data() + raw.size());
-      NodePath g = NodePath::decode_from_bam_stream(std::move(v));
+      // These are complete BAM files, not NodePath.encode_to_bam_stream()
+      // payloads: the latter has an additional path/error datagram.
+      std::istringstream stream(raw, std::ios::in | std::ios::binary);
+      BamFile bam;
+      NodePath g;
+      if (bam.open_read(stream, "sign text")) {
+        PT(PandaNode) model = bam.read_node();
+        if (model) g = NodePath(model);
+      }
       if (!g.is_empty()) { g.reparent_to(np); g.set_two_sided(true); g.set_depth_offset(60); }
     }
     if (!n->child("text_geom")) typesetBaseline(np, n, src, st);

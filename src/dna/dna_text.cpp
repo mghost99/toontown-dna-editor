@@ -127,7 +127,7 @@ static void convert(const std::string &x, Raw &r, XmlNode *parent) {
     return;
   }
   if (leaf && t == "color") { auto n = child(t); n->attrs = {{"r", vals(0)}, {"g", vals(1)}, {"b", vals(2)}, {"a", r.vals.size() > 3 ? vals(3) : "1"}}; return; }
-  if (leaf && (t == "title" || t == "texture")) {
+  if (leaf && (t == "title" || t == "texture" || t == "text_geom")) {
     auto n = child(t); if (!r.vals.empty()) { n->textStart = r.vals[0].s + (r.vals[0].t == STR); n->textEnd = r.vals[0].e - (r.vals[0].t == STR); }
     return;
   }
@@ -220,7 +220,7 @@ std::string toDnaText(const XmlNode *n, const std::string &src, int depth) {
   if (t == "pos" || t == "scale") return ind + t + " [ " + A(n, "x", "0") + " " + A(n, "y", "0") + " " + A(n, "z", "0") + " ]\n";
   if (t == "hpr" || t == "nhpr") return ind + t + " [ " + A(n, "h", "0") + " " + A(n, "p", "0") + " " + A(n, "r", "0") + " ]\n";
   if (t == "color") return ind + "color [ " + A(n, "r", "1") + " " + A(n, "g", "1") + " " + A(n, "b", "1") + " " + A(n, "a", "1") + " ]\n";
-  if (t == "title" || t == "texture") return ind + t + " [ " + q(nodeText(n, src)) + " ]\n";
+  if (t == "title" || t == "texture" || t == "text_geom") return ind + t + " [ " + q(nodeText(n, src)) + " ]\n";
   if (t == "suit_edge") return ind + "suit_edge [ " + A(n, "a") + " " + A(n, "b") + " ]\n";
   if (t == "battle_cell") return ind + "battle_cell [ " + A(n, "width") + " " + A(n, "height") + " " + A(n, "x", "0") + " " + A(n, "y", "0") + " " + A(n, "z", "0") + " ]\n";
   if (t == "store_suit_point") {

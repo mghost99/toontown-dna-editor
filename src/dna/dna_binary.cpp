@@ -428,6 +428,12 @@ struct Comp {
 }  // namespace
 
 bool compilePdna(const XmlNode *root, const std::string &src, std::string *bytes, std::string *err, bool compress, CompileStats *stats) {
+  bool baked = root && root->tag == "text_geom";
+  if (root) walk(root, [&](const XmlNode *node) { if (node->tag == "text_geom") baked = true; });
+  if (baked) {
+    if (err) *err = "This older PDNA contains baked sign geometry. Save as XML or DNA to preserve it, or replace its signs with editable text before compiling PDNA.";
+    return false;
+  }
   Comp c(src);
   W body; std::swap(body, c.w);
   c.w.u8(C_GROUP); c.w.str("root");
