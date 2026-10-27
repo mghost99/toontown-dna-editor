@@ -71,6 +71,7 @@ class Editor {
   bool rayBox(int i, const LPoint3 &o, const LVector3 &d, float &tEnter);
   int pickItem(render::View &v, float px, float py, LPoint3 &hitPt);   // whole-object pick (selected box first)
   render::GizmoOp prevOp_ = render::GizmoOp::None;
+  void rebuildScene();
   void syncItems(const std::vector<int> &ids);
   void dockLayout(unsigned id);
   void viewport3D(); void viewport2D(); void previewWindow(); void menuBar(); void shortcuts(); void statusBar();

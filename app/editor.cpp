@@ -35,7 +35,7 @@ Editor::Editor(platform::App &app, std::string res) : resRoot(std::move(res)), a
   previewRoot_.set_light(an); previewRoot_.set_light(dn);
   light_.attach(scene.world);
   light_.set(render::LightMode::Game, v3.get(), v2.get());
-  history.onChanged = [this](const std::vector<int> &ids) { syncItems(ids); };
+  history.onChanged = [this](const std::vector<int> &ids) { if (ids.empty()) rebuildScene(); else syncItems(ids); };
   { ScopedTimer t("catalog scan"); catalog = dna::loadCatalog(resRoot); }
   core::info(fmt("palette: %d props from all storage files", (int)catalog.size()));
   files_ = dna::sceneFiles(resRoot);
@@ -121,6 +121,16 @@ void Editor::passwordDialog() {
     if (ImGui::Button("Cancel", ImVec2(100, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) { wipe(); pwMsg_.clear(); ImGui::CloseCurrentPopup(); }
     ImGui::EndPopup();
   }
+}
+
+void Editor::rebuildScene() {
+  scene.build(doc, storage_);
+  for (int i = 0; i < (int)doc.items.size(); ++i) {
+    if (doc.items[i].origId < 0) scene.buildAdded(doc, i, storage_);
+    scene.syncItem(doc, i);
+  }
+  for (auto &[zone, visible] : vgVisible_) scene.setVisgroupVisible(zone, visible);
+  boxes_.clear();
 }
 
 void Editor::syncItems(const std::vector<int> &ids) {
@@ -847,11 +857,17 @@ void Editor::frame() {
     dna::Xform x = it ? it->xf : dna::Xform{};
     ui::SignEdit sign;
     int r = ui::inspectorPanel(it, it ? selection[0] : -1, x, &doc, &sign);
-    if (sign.commit && sign.baseline) {
-      int keep = selection[0];
-      if (doc.setSignLine(sign.baseline, sign.text)) {
-        scene.build(doc, storage_);
-        if (keep >= 0 && keep < (int)doc.items.size()) selection = {keep};
+    if (sign.commit) {
+      auto command = std::make_unique<commands::SourceCmd>();
+      command->before = doc.text; command->beforeDirty = doc.textDirty;
+      command->what = sign.baseline ? "Edit sign text" : "Edit property";
+      bool changed = sign.baseline ? doc.setSignLine(sign.baseline, sign.text)
+                                   : doc.setNodeAttribute(sign.node, sign.key, sign.value);
+      if (changed) {
+        command->after = doc.text;
+        history.pushApplied(std::move(command));
+        rebuildScene();
+        it = selection.size() == 1 ? &doc.items[selection[0]] : nullptr;
       }
     }
     if (r && it) {

@@ -2,6 +2,7 @@
 // .pdna compile/decompile, encrypted-.pdna password flow (with a stand-in cipher). Run: dna_tests SAMPLES_DIR TMP_DIR
 #include "dna/dna_document.h"
 #include "dna/dna_formats.h"
+#include "commands/commands.h"
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -146,6 +147,44 @@ int main(int argc, char **argv) {
     CHECK(txt.find("-120.156") != std::string::npos);
     CHECK(txt.find("71.977") != std::string::npos);
     CHECK(txt.find("code [ \"DCS\" ]") != std::string::npos);
+  }
+  // Editing sign lines in every format preserves geometry, logos, pending
+  // item commands and UTF-8 characters through save/reopen.
+  for (const auto &extension : {"dna", "xml", "pdna"}) {
+    dna::Document source; CHECK(load(source, street));
+    std::string input = T + "/sign-edit." + extension;
+    CHECK(save(source, input));
+    dna::Document doc; CHECK(load(doc, input));
+    auto baseline = [&]() { const dna::XmlNode *found = nullptr;
+      dna::walk(doc.root.get(), [&](const dna::XmlNode *n) { if (n->tag == "baseline") found = n; }); return found; };
+    doc.items[0].xf.x += 7; doc.items[1].deleted = true;
+    dna::Item added; added.kind = "prop"; added.code = "new-prop"; added.name = "added";
+    added.templateXml = "<prop name=\"added\" code=\"new-prop\"><pos x=\"2\" y=\"0\" z=\"0\" /></prop>";
+    added.xf.x = 2; doc.items.push_back(added);
+    const size_t count = doc.items.size(); const double moved = doc.items[0].xf.x;
+    commands::History history;
+    auto command = std::make_unique<commands::SourceCmd>();
+    command->before = doc.text; command->beforeDirty = doc.textDirty;
+    CHECK(doc.setSignLine(baseline(), "Café & Shop"));
+    command->after = doc.text; history.pushApplied(std::move(command));
+    CHECK(history.undo(doc)); CHECK(!doc.textDirty && doc.items.back().origId == -1);
+    CHECK(history.redo(doc)); CHECK(doc.textDirty && doc.items.back().xf.x == 2);
+    CHECK(doc.items.size() == count && doc.items.back().origId == -1);
+    CHECK(doc.items[0].xf.x == moved && doc.items[1].deleted);
+    CHECK(baseline() && baseline()->child("graphic"));
+    CHECK(doc.setNodeAttribute(baseline(), "code", "custom_font"));
+    CHECK(baseline()->attr("code") == "custom_font");
+    CHECK(doc.setNodeAttribute(baseline(), "width", "42"));
+    CHECK(save(doc, T + "/sign-result." + extension));
+    dna::Document back; CHECK(load(back, T + "/sign-result." + extension));
+    std::string words; int glyphs = 0;
+    dna::walk(back.root.get(), [&](const dna::XmlNode *n) { if (n->tag == "text") { words += dna::nodeText(n, back.text); ++glyphs; } });
+    CHECK(words == "Café & Shop" && glyphs == 11);
+    CHECK(findItem(back, "added") >= 0 && back.items.size() == count - 1);
+    CHECK(doc.setSignLine(baseline(), ""));
+    CHECK(baseline()->child("graphic") && !baseline()->child("text"));
+    CHECK(doc.setSignLine(baseline(), "New"));
+    CHECK(baseline()->child("text"));
   }
   printf("%d/%d checks passed\n", checks - fails, checks);
   return fails ? 1 : 0;

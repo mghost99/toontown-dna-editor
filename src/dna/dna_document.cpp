@@ -62,54 +62,85 @@ int Document::indexOfNode(const XmlNode *n) const {
   for (size_t i = 0; i < items.size(); i++) if (items[i].node == n) return (int)i;
   return -1;
 }
-bool Document::setSignLine(const XmlNode *baseline, const std::string &letters) {
-  if (!baseline || fmt == Format::Xml) return false;
-  auto indentAt = [&](size_t pos) {
-    size_t ls = text.rfind('\n', pos ? pos - 1 : 0);
-    ls = (ls == std::string::npos || ls >= pos) ? 0 : ls + 1;
-    size_t i = ls; while (i < text.size() && (text[i] == ' ' || text[i] == '\t')) i++;
-    return text.substr(ls, i - ls);
-  };
-  std::vector<const XmlNode *> texts;
-  for (auto &c : baseline->children) if (c->tag == "text") texts.push_back(c.get());
-  size_t s, e;
-  std::string ind;
-  if (!texts.empty()) {
-    s = texts.front()->start; e = texts.back()->end; ind = indentAt(s);
-  } else {
-    s = e = baseline->end > 0 ? baseline->end - 1 : baseline->end;
-    ind = indentAt(baseline->start) + " ";
-  }
-  std::string letterInd = ind + (ind.find('\t') != std::string::npos ? "\t" : " ");
-  std::string block;
-  for (unsigned char ch : letters) {
-    if (ch == '"') continue;
-    block += ind + "text [\n" + letterInd + "letters [ \"" + std::string(1, (char)ch) + "\" ]\n" + ind + "]\n";
-  }
-  text = text.substr(0, s) + block + text.substr(e);
+bool Document::replaceSource(size_t start, size_t end, const std::string &replacement) {
+  if (start > end || end > text.size()) return false;
+  text.replace(start, end - start, replacement);
   auto old = std::move(items);
-  root = parseDnaText(text);
+  root = fmt == Format::Xml ? parseXml(text) : parseDnaText(text);
   items.clear(); visgroups.clear();
-  int id = 0;
+  size_t original = 0;
   walk(root.get(), [&](const XmlNode *n) {
     if (n->tag == "visgroup") visgroups.push_back(n->attr("zone"));
     if (!kEditable.count(n->tag)) return;
-    Item it; it.origId = id++; it.kind = n->tag; it.node = n;
-    it.name = n->attr("name", n->attr("id")); it.code = n->attr("code", n->attr("type"));
-    it.width = fl(n->attr("width"), 0);
+    while (original < old.size() && old[original].origId < 0) ++original;
+    Item it;
+    if (original < old.size()) it = old[original++];
+    it.node = n;
+    it.kind = n->tag; it.name = n->attr("name", n->attr("id"));
+    it.code = n->attr("code", n->attr("type")); it.width = fl(n->attr("width"), 0);
+    it.visgroup.clear(); it.nested = false;
     for (auto p = n->parent; p; p = p->parent) {
       if (kEditable.count(p->tag)) it.nested = true;
       if (p->tag == "visgroup" && it.visgroup.empty()) it.visgroup = p->attr("zone");
     }
-    it.xf = it.origXf = xformOf(n);
     items.push_back(std::move(it));
   });
-  for (size_t i = 0; i < items.size() && i < old.size(); i++) {
-    items[i].xf = old[i].xf; items[i].origXf = old[i].origXf;
-    items[i].deleted = old[i].deleted; items[i].origId = old[i].origId;
-  }
+  // Unsaved additions have no source span. Keep their templates, transforms,
+  // indices, and deletion state so existing undo commands remain valid.
+  for (auto &it : old) if (it.origId < 0) items.push_back(std::move(it));
   textDirty = true;
   return true;
+}
+
+bool Document::setNodeAttribute(const XmlNode *node, const std::string &key, const std::string &value) {
+  if (!node || key.empty() || node->start >= node->end) return false;
+  std::string xml = toXmlText(node, text, 0);
+  auto tree = parseXml(xml);
+  if (tree->children.empty()) return false;
+  auto target = tree->children.front().get();
+  target->attrs[key] = value;
+  std::string replacement = fmt == Format::Xml ? toXmlText(target, xml, 0) : toDnaText(target, xml, 0);
+  return replaceSource(node->start, node->end, replacement);
+}
+
+bool Document::setSignLine(const XmlNode *baseline, const std::string &letters) {
+  if (!baseline || baseline->tag != "baseline") return false;
+  std::vector<const XmlNode *> texts;
+  for (auto &c : baseline->children) if (c->tag == "text") texts.push_back(c.get());
+  // Baked geometry contains no editable lettering. Keep it until replacement
+  // text is supplied explicitly, then replace only that geometry.
+  std::vector<std::string> glyphs;
+  for (size_t i = 0; i < letters.size();) {
+    size_t end = i + 1;
+    while (end < letters.size() && ((unsigned char)letters[end] & 0xc0) == 0x80) ++end;
+    glyphs.push_back(letters.substr(i, end - i)); i = end;
+  }
+  auto escape = [](const std::string &s) {
+    std::string out;
+    for (char c : s) {
+      if (c == '&') out += "&amp;"; else if (c == '<') out += "&lt;";
+      else if (c == '>') out += "&gt;"; else if (c == '\"') out += "&quot;"; else out += c;
+    }
+    return out;
+  };
+  std::string block;
+  for (size_t i = 0; i < glyphs.size(); ++i) {
+    std::string xml = texts.empty() ? "<text></text>" : toXmlText(texts[std::min(i, texts.size() - 1)], text, 0);
+    auto tree = parseXml(xml); auto entry = tree->children.front().get();
+    std::string replacement = escape(glyphs[i]);
+    xml.replace(entry->textStart, entry->textEnd - entry->textStart, replacement);
+    tree = parseXml(xml);
+    block += fmt == Format::Xml ? xml + "\n" : toDnaText(tree->children.front().get(), xml, 0);
+  }
+  // Edit individual text spans: intervening logos and unknown nodes survive.
+  std::vector<std::pair<size_t, size_t>> spans;
+  for (auto &c : baseline->children) if (c->tag == "text" || c->tag == "text_geom") spans.push_back({c->start, c->end});
+  size_t insert = fmt == Format::Xml ? text.rfind("</", baseline->end - 1) : baseline->end - 1;
+  if (!spans.empty()) insert = spans.front().first;
+  std::string updated = text;
+  for (auto it = spans.rbegin(); it != spans.rend(); ++it) updated.erase(it->first, it->second - it->first);
+  updated.insert(insert, block);
+  return replaceSource(0, text.size(), updated);
 }
 
 bool Document::dirty() const {

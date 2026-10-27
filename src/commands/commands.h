@@ -33,6 +33,15 @@ struct DeleteCmd : Command {   // also used (inverted) for add
   std::string label() const override { return add ? "Add" : "Delete"; }
 };
 
+struct SourceCmd : Command {
+  std::string before, after, what;
+  bool beforeDirty = false;
+  void redo(dna::Document &d) override { d.replaceSource(0, d.text.size(), after); }
+  void undo(dna::Document &d) override { d.replaceSource(0, d.text.size(), before); d.textDirty = beforeDirty; }
+  std::vector<int> touched() const override { return {}; }
+  std::string label() const override { return what; }
+};
+
 class History {
  public:
   std::function<void(const std::vector<int> &)> onChanged;

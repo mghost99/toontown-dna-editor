@@ -1,4 +1,5 @@
 #include "ui.h"
+#include <functional>
 #include "core/log.h"
 #include "imgui.h"
 #include <algorithm>
@@ -138,7 +139,7 @@ static void collectSigns(const dna::XmlNode *n, const std::string &src, std::vec
       if (c->tag == "text") line.text += dna::nodeText(c.get(), src);
       else if (c->tag == "graphic") logos.push_back(c->attr("code"));
     }
-    if (!line.text.empty()) lines.push_back(std::move(line));
+    lines.push_back(std::move(line));
     return;
   }
   for (auto &c : n->children) collectSigns(c.get(), src, lines, logos);
@@ -169,16 +170,18 @@ int inspectorPanel(dna::Item *it, int index, dna::Xform &x, const dna::Document 
     if (!lines.empty() || !logos.empty()) {
       ImGui::Dummy(ImVec2(0, 6));
       ImGui::SeparatorText("Sign");
+      static const dna::XmlNode *draftRoot = nullptr;
       static int draftFor = -2;
       static std::vector<std::string> drafts;
-      if (draftFor != index || drafts.size() != lines.size()) {
+      if (draftRoot != doc->root.get() || draftFor != index || drafts.size() != lines.size()) {
+        draftRoot = doc->root.get();
         draftFor = index; drafts.clear();
         for (auto &ln : lines) drafts.push_back(ln.text);
       }
       for (size_t i = 0; i < lines.size(); i++) {
         if (lines.size() > 1) ImGui::TextDisabled("Line %d", (int)i + 1);
         info("Font", lines[i].font.empty() ? std::string("none") : lines[i].font);
-        info("Face", signFace(lines[i].font));
+        info("Face fallback", signFace(lines[i].font));
         ImGui::TextDisabled("Text");
         ImGui::SetNextItemWidth(-1);
         char buf[512];
@@ -194,6 +197,38 @@ int inspectorPanel(dna::Item *it, int index, dna::Xform &x, const dna::Document 
       for (auto &logo : logos) info("Logo", logo);
       ImGui::TextDisabled("Saved as one letter per entry.");
     }
+  }
+
+  if (doc && it->node && sign) {
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::SeparatorText("Properties");
+    ImGui::TextWrapped("Expand a section to edit its values. Font codes refer to the loaded storage files.");
+    std::function<void(const dna::XmlNode *, bool)> properties = [&](const dna::XmlNode *node, bool top) {
+      ImGui::PushID((int)node->start);
+      bool expanded = top || ImGui::TreeNode(node->tag.c_str());
+      if (expanded) {
+        for (auto &kv : node->attrs) {
+          ImGui::TextDisabled("%s", kv.first.c_str());
+          ImGui::SetNextItemWidth(-1);
+          ImGui::PushID(kv.first.c_str());
+          char buf[4096]; snprintf(buf, sizeof buf, "%s", kv.second.c_str());
+          ImGui::InputText("##property", buf, sizeof buf);
+          if (ImGui::IsItemDeactivatedAfterEdit() && kv.second != buf) {
+            sign->node = node; sign->key = kv.first; sign->value = buf; sign->commit = true;
+          }
+          ImGui::PopID(); ImGui::Dummy(ImVec2(0, 3));
+        }
+        for (auto &child : node->children) {
+          const auto &tag = child->tag;
+          if (tag == "text_geom") continue;
+          if (top && (tag == "pos" || tag == "hpr" || tag == "nhpr" || tag == "scale")) continue;
+          properties(child.get(), false);
+        }
+        if (!top) ImGui::TreePop();
+      }
+      ImGui::PopID();
+    };
+    properties(it->node, true);
   }
 
   ImGui::Dummy(ImVec2(0, 6));

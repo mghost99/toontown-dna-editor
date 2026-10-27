@@ -43,7 +43,11 @@ std::vector<Tok> tokenize(const std::string &x) {
     if (c == '[') { v.push_back({LB, i, i + 1}); i++; continue; }
     if (c == ']') { v.push_back({RB, i, i + 1}); i++; continue; }
     if (c == ',') { v.push_back({COMMA, i, i + 1}); i++; continue; }
-    if (c == '"') { size_t e = x.find('"', i + 1); e = e == std::string::npos ? n : e + 1; v.push_back({STR, i, e}); i = e; continue; }
+    if (c == '"') {
+      size_t e = i + 1;
+      while (e < n) { if (x[e] == '\\' && e + 1 < n) { e += 2; continue; } if (x[e++] == '"') break; }
+      v.push_back({STR, i, e}); i = e; continue;
+    }
     size_t s = i;
     while (i < n && !std::isspace((unsigned char)x[i]) && x[i] != '[' && x[i] != ']' && x[i] != ',' && x[i] != '"') i++;
     v.push_back({WORD, s, i});
@@ -98,7 +102,14 @@ std::string headAttr(const std::string &tag) {
 }  // namespace
 
 static std::string tokVal(const std::string &x, const Tok &k) {
-  if (k.t == STR) return x.substr(k.s + 1, k.e > k.s + 1 ? k.e - k.s - 2 : 0);
+  if (k.t == STR) {
+    std::string out;
+    for (size_t i = k.s + 1; i + 1 < k.e; ++i) {
+      if (x[i] == '\\' && i + 2 < k.e && (x[i + 1] == '\\' || x[i + 1] == '"')) ++i;
+      out += x[i];
+    }
+    return out;
+  }
   return x.substr(k.s, k.e - k.s);
 }
 
@@ -177,10 +188,27 @@ static std::string esc(const std::string &s) {
   return o;
 }
 
-std::string nodeText(const XmlNode *n, const std::string &src) { return unesc(n->text(src)); }
+std::string nodeText(const XmlNode *n, const std::string &src) {
+  std::string value = n->tag == "text" && n->textEnd > n->textStart
+    ? src.substr(n->textStart, n->textEnd - n->textStart) : n->text(src);
+  if (value.find_first_of("\r\n") != std::string::npos) value = n->text(src);
+  if (textFormat(src) == Format::Dna && n->tag == "text") {
+    std::string decoded;
+    for (size_t i = 0; i < value.size(); ++i) {
+      if (value[i] == '\\' && i + 1 < value.size() && (value[i + 1] == '\\' || value[i + 1] == '"')) ++i;
+      decoded += value[i];
+    }
+    return decoded;
+  }
+  return unesc(value);
+}
 
 // ---------------------------------------------------------------- DNA writer
-static std::string q(const std::string &s) { return "\"" + s + "\""; }
+static std::string q(const std::string &s) {
+  std::string out = "\"";
+  for (char c : s) { if (c == '\\' || c == '"') out += '\\'; out += c; }
+  return out + "\"";
+}
 static std::string A(const XmlNode *n, const char *k, const char *d = "") { return unesc(n->attr(k, d)); }
 
 std::string toDnaText(const XmlNode *n, const std::string &src, int depth) {
@@ -244,6 +272,11 @@ std::string toXmlText(const XmlNode *n, const std::string &src, int depth) {
   std::string txt = (n->textEnd > n->textStart) ? nodeText(n, src) : "";
   if (n->children.empty() && txt.empty()) return o + " />\n";
   if (n->children.empty()) return o + ">" + esc(txt) + "</" + n->tag + ">\n";
+  if (n->tag == "text") {
+    o += ">" + esc(txt);
+    for (auto &c : n->children) { auto child = toXmlText(c.get(), src, 0); o += child; }
+    return o + "</text>\n";
+  }
   o += ">" + esc(txt) + "\n";
   for (auto &c : n->children) o += toXmlText(c.get(), src, depth + 1);
   return o + ind + "</" + n->tag + ">\n";
