@@ -100,6 +100,15 @@ class Editor {
   char ovHolidays_[256] = "HALLOWEEN_PROPS,SPOOKY_PROPS";
   char ovCode_[128] = "";
   char ovRecolor_[32] = "1 1 1 1";
+  char ovParentCode_[128] = "prop_gazebo";  // ATTACH-TO-MODEL parent DNA code
+  char ovParentNode_[128] = "";             // optional sub-node under parent
+  // Effect / lighting (AODNA <effect>); lightTuner gazebo field names
+  bool ovFxLoaded_ = false;
+  float ovFxMistOpacity_ = 0.14f, ovFxMistDensity_ = 0.35f, ovFxMistHeight_ = 0.55f;
+  float ovFxMistSpeed_ = 0.40f, ovFxMistHue_ = 0.28f, ovFxMistRadius_ = 8.0f;
+  float ovFxLanternSize_ = 1.45f, ovFxLanternIntensity_ = 0.38f, ovFxFlashSpeed_ = 1.0f;
+  void loadOverrideEffectsFromDoc();
+  bool applyOverrideEffects();
   void drawSelection(render::View &v, bool topDown);
   bool handleDrag(render::View &v, bool topDown, bool hovered);
   void pushXformFromNode(int id, bool fromGizmo = false);

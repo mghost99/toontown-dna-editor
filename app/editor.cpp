@@ -67,7 +67,7 @@ bool Editor::open(const std::string &f) {
   std::string sl; for (auto &s : st) sl += (sl.empty() ? "" : ", ") + fs::path(s).filename().string();
   core::info("storage for " + doc.rel + ": " + sl);
   for (auto &u : undef) core::warn("code used by this file but defined in no storage file: " + u);
-  history.clear(); selection.clear(); boxes_.clear(); editing_ = false; dragging_ = dragArmed_ = false; overrideDirty_ = false;
+  history.clear(); selection.clear(); boxes_.clear(); editing_ = false; dragging_ = dragArmed_ = false; overrideDirty_ = false; ovFxLoaded_ = false;
   { ScopedTimer t("generate scene (models+textures)"); scene.build(doc, storage_); }
   vgVisible_.clear(); for (auto &v : doc.visgroups) vgVisible_[v] = true;
   loadedCodes_ = storage_.codes();
@@ -281,6 +281,13 @@ int Editor::placePreviewed() {
   it.templateXml = "<" + it.kind + " name=\"" + e.code + "\" code=\"" + e.code + "\"";
   if (!previewAnimation_.empty()) it.templateXml += " anim=\"" + previewAnimation_ + "\"";
   if (it.kind == "interactive_prop") it.templateXml += " cell_id=\"0\"";
+  // ATTACH-TO-MODEL: when editing an Appearance Override, stamp parent_code so the
+  // game parents this ADD to the named DNA prop (pos/hpr/scale stay local).
+  if (isAppearanceOverride() && ovParentCode_[0]) {
+    it.templateXml += " parent_code=\"" + std::string(ovParentCode_) + "\"";
+    if (ovParentNode_[0])
+      it.templateXml += " parent_node=\"" + std::string(ovParentNode_) + "\"";
+  }
   it.templateXml += ">\n\t<pos x=\"0.00\" y=\"0.00\" z=\"0.00\" />\n\t<nhpr h=\"0.00\" p=\"0.00\" r=\"0.00\" />\n</" + it.kind + ">";
   LPoint3 p = placementPoint();
   it.xf.x = snapv(p[0]); it.xf.y = snapv(p[1]); it.xf.z = p[2];
@@ -775,12 +782,83 @@ bool Editor::newAppearanceOverride() {
   return open(out.string());
 }
 
+
+void Editor::loadOverrideEffectsFromDoc() {
+  ovFxLoaded_ = true;
+  // Defaults match HalloweenGazeboFog._DEFAULTS when XML has no effect yet.
+  auto grab = [&](const char *type, const char *key, float &dst) {
+    std::string needle = std::string("type=\"") + type + "\"";
+    size_t p = doc.text.find(needle);
+    if (p == std::string::npos) return;
+    size_t lineStart = doc.text.rfind('<', p);
+    size_t lineEnd = doc.text.find('>', p);
+    if (lineStart == std::string::npos || lineEnd == std::string::npos) return;
+    std::string line = doc.text.substr(lineStart, lineEnd - lineStart);
+    std::string k = std::string(key) + "=\"";
+    size_t a = line.find(k);
+    if (a == std::string::npos) return;
+    a += k.size();
+    size_t b = line.find('"', a);
+    if (b == std::string::npos) return;
+    try { dst = std::stof(line.substr(a, b - a)); } catch (...) {}
+  };
+  grab("ground_fog", "mistOpacity", ovFxMistOpacity_);
+  grab("ground_fog", "mistDensity", ovFxMistDensity_);
+  grab("ground_fog", "mistHeight", ovFxMistHeight_);
+  grab("ground_fog", "mistSpeed", ovFxMistSpeed_);
+  grab("ground_fog", "mistHue", ovFxMistHue_);
+  grab("ground_fog", "mistRadius", ovFxMistRadius_);
+  grab("lantern_glow", "lanternGlowSize", ovFxLanternSize_);
+  grab("lantern_glow", "lanternGlowIntensity", ovFxLanternIntensity_);
+  grab("lantern_glow", "flashSpeed", ovFxFlashSpeed_);
+}
+
+bool Editor::applyOverrideEffects() {
+  if (!isAppearanceOverride() || doc.text.empty()) return false;
+  auto fmtf = [](float v) {
+    char buf[32]; snprintf(buf, sizeof buf, "%.4g", (double)v); return std::string(buf);
+  };
+  std::string fog = "<effect type=\"ground_fog\" target=\"gazebo\" mistOpacity=\"" +
+      fmtf(ovFxMistOpacity_) + "\" mistDensity=\"" + fmtf(ovFxMistDensity_) +
+      "\" mistHeight=\"" + fmtf(ovFxMistHeight_) + "\" mistSpeed=\"" + fmtf(ovFxMistSpeed_) +
+      "\" mistHue=\"" + fmtf(ovFxMistHue_) + "\" mistRadius=\"" + fmtf(ovFxMistRadius_) + "\"/>";
+  std::string glow = "<effect type=\"lantern_glow\" target=\"gazebo\" lanternGlowSize=\"" +
+      fmtf(ovFxLanternSize_) + "\" lanternGlowIntensity=\"" + fmtf(ovFxLanternIntensity_) +
+      "\" flashSpeed=\"" + fmtf(ovFxFlashSpeed_) + "\"/>";
+  auto repl = [&](const char *type, const std::string &el) {
+    std::string needle = std::string("type=\"") + type + "\"";
+    size_t p = doc.text.find(needle);
+    if (p != std::string::npos) {
+      size_t a = doc.text.rfind('<', p);
+      size_t b = doc.text.find('>', p);
+      if (a != std::string::npos && b != std::string::npos) {
+        // include optional trailing newline
+        size_t end = b + 1;
+        if (end < doc.text.size() && doc.text[end] == '\n') end++;
+        size_t ls = a;
+        while (ls > 0 && (doc.text[ls - 1] == ' ' || doc.text[ls - 1] == '\t')) ls--;
+        doc.text.replace(ls, end - ls, std::string("\t\t") + el + "\n");
+        return;
+      }
+    }
+    size_t g = doc.text.rfind("</group>");
+    if (g != std::string::npos)
+      doc.text.insert(g, std::string("\t\t") + el + "\n");
+  };
+  repl("ground_fog", fog);
+  repl("lantern_glow", glow);
+  doc.textDirty = true;
+  overrideDirty_ = true;
+  core::info("AODNA effects updated (Ctrl+S to save)");
+  return true;
+}
+
 void Editor::overridePanel() {
   if (!isAppearanceOverride()) return;  // opt-in: never show on normal DNA
   ImGui::Begin("Appearance Override");
   ImGui::TextWrapped(
       "Opt-in holiday/appearance overlay. Normal DNA files never see this panel.\n"
-      "Add props: place from the Palette (same as normal DNA).\n"
+      "Add props: place from the Palette (parent_code attaches to a zone model).\n"
       "Hide / Replace / Recolor: select a prop or type its DNA code.");
   ImGui::Separator();
   ImGui::SetNextItemWidth(120);
@@ -788,6 +866,50 @@ void Editor::overridePanel() {
   ImGui::SetNextItemWidth(280);
   ImGui::InputText("holidays", ovHolidays_, sizeof ovHolidays_);
   if (ImGui::Button("Apply gate")) setOverrideGate(ovGate_, ovHolidays_);
+  ImGui::Separator();
+  ImGui::TextWrapped("ATTACH-TO-MODEL: new Palette places get parent_code below. "
+                     "Pos/hpr/scale are local to that DNA prop (e.g. gazebo).");
+  ImGui::SetNextItemWidth(180);
+  ImGui::InputText("parent_code", ovParentCode_, sizeof ovParentCode_);
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(140);
+  ImGui::InputText("parent_node", ovParentNode_, sizeof ovParentNode_);
+  if (ImGui::Button("Attach selected to parent_code") && !selection.empty() && ovParentCode_[0]) {
+    for (int i : selection) {
+      if (i < 0 || i >= (int)doc.items.size()) continue;
+      auto &it = doc.items[i];
+      if (it.node) {
+        doc.setNodeAttribute(it.node, "parent_code", ovParentCode_);
+        if (ovParentNode_[0])
+          doc.setNodeAttribute(it.node, "parent_node", ovParentNode_);
+        else
+          doc.setNodeAttribute(it.node, "parent_node", "");
+      } else if (!it.templateXml.empty()) {
+        // Unsaved add: rewrite opening tag attrs.
+        auto amp = it.templateXml.find('>');
+        if (amp != std::string::npos) {
+          std::string open = it.templateXml.substr(0, amp);
+          auto strip = [](std::string &s, const char *key) {
+            auto p = s.find(key);
+            if (p == std::string::npos) return;
+            auto q = s.find('"', p); if (q == std::string::npos) return;
+            auto r = s.find('"', q + 1); if (r == std::string::npos) return;
+            s.erase(p, r + 1 - p);
+          };
+          strip(open, "parent_code=");
+          strip(open, "parent_node=");
+          open += " parent_code=\"" + std::string(ovParentCode_) + "\"";
+          if (ovParentNode_[0])
+            open += " parent_node=\"" + std::string(ovParentNode_) + "\"";
+          it.templateXml = open + it.templateXml.substr(amp);
+        }
+      }
+      overrideDirty_ = true;
+    }
+    // Re-parse so attrs stick for next save of sourced items
+    if (doc.textDirty || overrideDirty_) { /* save will keep template attrs */ }
+    core::info("set parent_code=" + std::string(ovParentCode_) + " on selection");
+  }
   ImGui::Separator();
   ImGui::SetNextItemWidth(220);
   ImGui::InputText("code", ovCode_, sizeof ovCode_);
@@ -827,9 +949,26 @@ if (ImGui::Button("Use selected code") && !selection.empty()) {
       injectOverrideOp("recolor", c, ex);
     }
   }
+  ImGui::Separator();
+  if (!ovFxLoaded_) loadOverrideEffectsFromDoc();
+  ImGui::TextWrapped("Effects / lighting (written as <effect> — same keys as ~lightTuner Gazebo). "
+                     "Game uses these when want-appearance-override is on.");
+  ImGui::TextDisabled("ground_fog");
+  ImGui::SetNextItemWidth(120); ImGui::DragFloat("mistOpacity", &ovFxMistOpacity_, 0.01f, 0.02f, 0.72f, "%.3f");
+  ImGui::SameLine(); ImGui::SetNextItemWidth(120); ImGui::DragFloat("mistDensity", &ovFxMistDensity_, 0.01f, 0.05f, 1.5f, "%.3f");
+  ImGui::SetNextItemWidth(120); ImGui::DragFloat("mistHeight", &ovFxMistHeight_, 0.01f, 0.2f, 2.5f, "%.3f");
+  ImGui::SameLine(); ImGui::SetNextItemWidth(120); ImGui::DragFloat("mistSpeed", &ovFxMistSpeed_, 0.01f, 0.15f, 2.0f, "%.3f");
+  ImGui::SetNextItemWidth(120); ImGui::DragFloat("mistHue", &ovFxMistHue_, 0.01f, 0.0f, 1.0f, "%.3f");
+  ImGui::SameLine(); ImGui::SetNextItemWidth(120); ImGui::DragFloat("mistRadius", &ovFxMistRadius_, 0.1f, 3.0f, 30.0f, "%.2f");
+  ImGui::TextDisabled("lantern_glow");
+  ImGui::SetNextItemWidth(120); ImGui::DragFloat("lanternGlowSize", &ovFxLanternSize_, 0.01f, 0.9f, 2.2f, "%.3f");
+  ImGui::SameLine(); ImGui::SetNextItemWidth(120); ImGui::DragFloat("lanternGlowIntensity", &ovFxLanternIntensity_, 0.01f, 0.05f, 1.0f, "%.3f");
+  ImGui::SetNextItemWidth(120); ImGui::DragFloat("flashSpeed", &ovFxFlashSpeed_, 0.01f, 0.25f, 2.5f, "%.3f");
+  if (ImGui::Button("Apply effects to XML")) applyOverrideEffects();
+
   if (overrideDirty_ || doc.textDirty)
     ImGui::TextColored(ImVec4(1, 0.75f, 0.35f, 1), "Override ops pending — Ctrl+S to save");
-  ImGui::TextDisabled("Format matches the game AODNA loader (hide/replace/recolor/prop).");
+  ImGui::TextDisabled("Format: hide/replace/recolor/prop + effect (AODNA loader).");
   ImGui::End();
 }
 

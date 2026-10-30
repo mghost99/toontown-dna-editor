@@ -346,9 +346,11 @@ void helpPanel() {
   section("Appearance Override (opt-in)", {
     {"File > New Appearance Override", "Creates phase_*/dna/overrides/*.xml with appearance_override=1. Normal DNA is untouched."},
     {"Open overrides/*.xml", "Listed in Open when the folder exists. The Appearance Override panel appears only for these files."},
-    {"Palette > Place", "Add a prop into the override (same as normal DNA)."},
+    {"Palette > Place", "Add a prop into the override. With parent_code set (panel), the game attaches it to that DNA model."},
+    {"ATTACH-TO-MODEL", "Set parent_code (e.g. prop_gazebo) and optional parent_node. Pos/hpr/scale are local to that model. Attach selected stamps the attr."},
     {"Hide / Replace / Recolor", "Select a prop or type its DNA code in the panel, then click the button. Save with Ctrl+S."},
-    {"gate / holidays", "always, holiday, or date. Holiday names match the game (e.g. HALLOWEEN_PROPS)."}});
+    {"gate / holidays", "always, holiday, or date. Holiday names match the game (e.g. HALLOWEEN_PROPS)."},
+    {"Effects / lighting", "<effect type=ground_fog|lantern_glow> with ~lightTuner Gazebo field names. Apply effects, then Ctrl+S."}});
 }
 
 
