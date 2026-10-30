@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
   if (const char *pw = getenv("DNAED_PDNA_PASSWORD")) if (*pw) dna::setSessionPassword(pw);
   std::string res, file, selftest, snapPath; platform::Options o; int preSel = -1; int preOp = -1;
   bool doSave = false;
-  bool previewEffects = false; float dpos[3] = {0, 0, 0}; bool haveDpos = false;
+  bool previewEffects = false, animateBats = false; float dpos[3] = {0, 0, 0}; bool haveDpos = false;
   float dscale = 0; bool haveDscale = false;
   std::string convIn, convOut; bool encryptOut = false;
   for (int i = 1; i < argc; i++) {
@@ -99,6 +99,7 @@ int main(int argc, char **argv) {
     } else if (a == "--save") doSave = true;
     else if (a == "--snap-and-exit" && i + 1 < argc) snapPath = argv[++i];
     else if (a == "--preview-effects") previewEffects = true;
+    else if (a == "--animate-bats") animateBats = true;
     else if (a == "--size" && i + 1 < argc) sscanf(argv[++i], "%dx%d", &o.width, &o.height);
     else if (a == "-h" || a == "--help") {
       printf("usage: dna-editor [--res RESOURCES_DIR (else DNAED_RES, config.ini, auto)] [--size WxH] [--offscreen] [--selftest OUT_DIR] [--password PW (else DNAED_PDNA_PASSWORD)] [--convert IN OUT [--encrypt]] [DNA_FILE (.xml/.dna/.pdna)]\n"); return 0;
@@ -140,7 +141,19 @@ int main(int argc, char **argv) {
   if (!file.empty()) ed.open(file);
   core::setTiming("startup to first file open", core::nowMs() - t0);
 
+  // DNAED_SELECT_NAME=a,b selects items by name (comma list) for snapshots
+  if (const char *nm = getenv("DNAED_SELECT_NAME")) {
+    std::string list = std::string(",") + nm + ",";
+    std::vector<int> sel;
+    for (int i = 0; i < (int)ed.doc.items.size(); i++)
+      if (list.find("," + ed.doc.items[i].name + ",") != std::string::npos) sel.push_back(i);
+    if (!sel.empty()) { ed.selection = sel; if (getenv("DNAED_FRAME_SEL")) ed.frameSelection(); preSel = -1; }
+  }
   if (preSel >= 0 && preSel < (int)ed.doc.items.size()) { ed.selection = {preSel}; if (getenv("DNAED_FRAME_SEL")) ed.frameSelection(); }
+  if (const char *cam = getenv("DNAED_CAM")) {   // close-up snapshots: "dist[,yaw[,pitch]]" around the framed target
+    float d = ed.v3->dist, y = ed.v3->yaw, p = ed.v3->pitch;
+    if (sscanf(cam, "%f,%f,%f", &d, &y, &p) >= 1) { ed.v3->dist = d; ed.v3->yaw = y; ed.v3->pitch = p; ed.v3->apply(); }
+  }
   if (preOp >= 0) ed.gizmoOp = (render::GizmoOp)preOp;
   if (haveDpos && preSel >= 0 && preSel < (int)ed.doc.items.size()) {
     // Simulate a Move-gizmo nudge on the selected item, then optional save (e2e / smoke).
@@ -169,10 +182,13 @@ int main(int argc, char **argv) {
   }
   if (!snapPath.empty()) {   // real-window smoke test: render a few frames, screenshot, exit
     if (previewEffects) ed.setPreviewEffects(true);
+    if (animateBats) ed.setAnimateBats(true);
+    if (getenv("DNAED_SNAP_NOSEL")) ed.selection.clear();   // hide the selection box/gizmo
     int nFrames = previewEffects ? 48 : 8;   // enough for odd/even flash cycle
     for (int i = 0; i < nFrames; i++) app.step([&] { ed.frame(); });
     bool ok = app.screenshot(snapPath);
     printf("snap %s: %s\n", snapPath.c_str(), ok ? "ok" : "FAILED");
+    { auto r = ed.v3->rect(); printf("view3d rect %.0f %.0f %.0f %.0f\n", (double)r.x, (double)r.y, (double)r.w, (double)r.h); }
     app.close(); return ok ? 0 : 1;
   }
   if (selftest.empty()) {
