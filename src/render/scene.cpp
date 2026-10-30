@@ -417,7 +417,9 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
       np = host.attach_new_node(n->attr("name", "prop"));
       card.reparent_to(np);
     } else {
-      if (!code.empty()) src = st.findNode(code);
+      // model= with an unknown code (AODNA adds of BAMs no hood storage loads): load the BAM
+      // directly instead of warning; a known code still wins, matching the game's resolve order.
+      if (!code.empty() && (model.empty() || st.hasCode(code))) src = st.findNode(code);
       if (src.is_empty() && !model.empty()) src = assets::ModelCache::get().load(model);
       np = src.is_empty() ? host.attach_new_node(n->attr("name", "prop")) : src.copy_to(host);
       if (src.is_empty() && code != "DCS") {
