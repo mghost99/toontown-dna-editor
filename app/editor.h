@@ -25,6 +25,10 @@ class Editor {
   void yawSelectedBy(float deg, bool commit);            // heading delta, one undo step if commit
   void pitchSelectedBy(float deg, bool commit);          // pitch delta, one undo step if commit
   void scaleSelectedUniform(float factor, bool commit);  // multiplicative uniform scale, clamp > 0.01
+  void setPreviewEffects(bool on);   // live lantern flash + halo + fog; never writes XML
+  bool previewEffects() const { return ovPreviewEffects_; }
+  void setAnimateBats(bool on);        // flap/bob preview; never writes XML
+  bool animateBats() const { return ovAnimateBats_; }
   float yawStep() const { return snap.on ? snap.angle : 15.f; }   // world-space delta, one undo step if commit
   float wheelAngleStep() const { return snap.on ? snap.angle : 5.f; }  // Ctrl/Alt+wheel heading/pitch step
   bool snapActive() const;  // snap.on and Alt not held (Alt = temporary bypass)
@@ -51,6 +55,8 @@ class Editor {
   double lastFrameMs = 0;
   // test hooks
   bool forceViews = false;
+  bool invertCamera_ = true;   // grab-the-world default; View > Invert camera
+  bool invertCameraY_ = true;  // pitch/pan Y (same default)
   float wheelSpeed = 1.5f;
  private:
   platform::App &app_;
@@ -112,8 +118,18 @@ class Editor {
   float ovFxMistOpacity_ = 0.14f, ovFxMistDensity_ = 0.35f, ovFxMistHeight_ = 0.55f;
   float ovFxMistSpeed_ = 0.40f, ovFxMistHue_ = 0.28f, ovFxMistRadius_ = 8.0f;
   float ovFxLanternSize_ = 1.45f, ovFxLanternIntensity_ = 0.38f, ovFxFlashSpeed_ = 1.0f;
+  bool ovPreviewEffects_ = true;           // Preview effects ON by default (live only, no XML)
+  bool ovAnimateBats_ = false;             // Bat flap/bob OFF by default (placement-friendly)
+  NodePath fxPreviewRoot_;                 // labels + fog + halos (not saved)
+  PT(Texture) fxHaloTex_, fxCloudTex_, fxBatUpTex_, fxBatDownTex_;
+  bool fxPreviewBuilt_ = false;
   void loadOverrideEffectsFromDoc();
   bool applyOverrideEffects();
+  void updateEffectsPreview();             // flash + halo + fog; no XML
+  void clearEffectsPreview();
+  void updateBatsPreview();                // flap + bob; restores rest pose when off
+  PT(Texture) ensureHaloTex();
+  PT(Texture) ensureCloudTex();
   void drawSelection(render::View &v, bool topDown);
   bool handleDrag(render::View &v, bool topDown, bool hovered);
   void pushXformFromNode(int id, bool fromGizmo = false);

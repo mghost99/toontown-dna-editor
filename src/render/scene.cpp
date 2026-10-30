@@ -8,6 +8,7 @@
 #include "textureStage.h"
 #include "depthOffsetAttrib.h"
 #include "collisionNode.h"
+#include "collisionPlane.h"
 #include "compress_string.h"
 #include "textNode.h"
 #include "fontPool.h"
@@ -46,7 +47,7 @@ void Scene::clear() {
   assets::stopAnimations(animations);
   geom.remove_node(); markers.remove_node();
   geom = world.attach_new_node("dna"); markers = world.attach_new_node("markers");
-  itemNodes.clear(); visgroupNodes.clear(); unknownTags_.clear(); attachParents_.clear(); stats_nodes = 0;
+  itemNodes.clear(); visgroupNodes.clear(); unknownTags_.clear(); attachParents_.clear(); walkFloor_ = NodePath(); stats_nodes = 0;
 }
 
 
@@ -129,6 +130,7 @@ void Scene::prepareAttachParents(const dna::Document &doc, assets::Storage &st) 
     if (!pc.empty()) codes.insert(pc);
   });
   for (auto &c : codes) ensureAttachParent(c, st, &doc);
+  ensureWalkFloor(doc);
 }
 
 NodePath Scene::ensureAttachParent(const std::string &code, assets::Storage &st, const dna::Document *doc) {
@@ -143,21 +145,73 @@ NodePath Scene::ensureAttachParent(const std::string &code, assets::Storage &st,
   } else {
     core::warn("ATTACH-TO-MODEL: no host xform for parent_code=" + code + " (props at local origin)");
   }
-  // Ghost of the parent model for placement context (not an editable item).
+  // Parent model for placement context (not an editable item / no eid — non-selectable).
   NodePath src = st.findNode(code);
   if (!src.is_empty()) {
     NodePath ghost = src.copy_to(holder);
     ghost.set_name("aodna_parent_ghost");
-    ghost.set_transparency(TransparencyAttrib::M_alpha);
-    ghost.set_color_scale(1, 1, 1, 0.45f);
     ghost.set_light_off(1);
     { auto cc = ghost.find_all_matches("**/+CollisionNode"); cc.hide(); }
+    applyParentGhostAlpha(ghost);
   } else {
     core::warn("ATTACH-TO-MODEL: parent model not in storage: " + code);
   }
   attachParents_[code] = holder;
   return holder;
 }
+
+void Scene::applyParentGhostAlpha(NodePath ghost) const {
+  if (ghost.is_empty()) return;
+  float a = parentGhostAlpha_;
+  if (a >= 0.999f) {
+    ghost.clear_transparency();
+    ghost.clear_color_scale();
+  } else {
+    ghost.set_transparency(TransparencyAttrib::M_alpha);
+    ghost.set_color_scale(1, 1, 1, std::max(0.1f, a));
+  }
+}
+
+void Scene::setParentGhostAlpha(float a) {
+  parentGhostAlpha_ = std::clamp(a, 0.1f, 1.f);
+  for (auto &kv : attachParents_) {
+    if (kv.second.is_empty()) continue;
+    NodePath ghost = kv.second.find("**/aodna_parent_ghost");
+    if (ghost.is_empty()) ghost = kv.second.find("aodna_parent_ghost");
+    applyParentGhostAlpha(ghost);
+  }
+}
+
+void Scene::ensureWalkFloor(const dna::Document &doc) {
+  // Appearance Override files only contain overlay props — no street/ground.
+  // Add a large collidable plane so Walk mode has a floor. Never an editable
+  // item (no eid tag) and never written to XML.
+  if (!walkFloor_.is_empty()) { walkFloor_.remove_node(); walkFloor_ = NodePath(); }
+  bool need = false;
+  if (doc.root) {
+    std::string kind = doc.root->attr("kind");
+    if (kind == "appearance_override" || kind == "AppearanceOverride") need = true;
+    dna::walk(doc.root.get(), [&](const dna::XmlNode *n) {
+      if (n && !n->attr("parent_code").empty()) need = true;
+    });
+  }
+  if (!need) return;
+  // Ground height: use host gazebo/base z when known; TTC gazebo sits at z≈-2.
+  float z = -2.f;
+  LPoint3 pos; LVecBase3 hpr;
+  if (lookupHostPropXform(doc, "prop_gazebo", pos, hpr))
+    z = pos[2];
+  walkFloor_ = geom.attach_new_node("aodna_walk_floor");
+  PT(CollisionNode) cn = new CollisionNode("aodna_walk_floor_col");
+  cn->set_into_collide_mask(BitMask32::all_on());
+  cn->set_from_collide_mask(BitMask32::all_off());
+  // Huge plane at playground ground height (gazebo base).
+  cn->add_solid(new CollisionPlane(LPlane(LVector3(0, 0, 1), LPoint3(0, 0, z))));
+  NodePath col = walkFloor_.attach_new_node(cn);
+  col.hide();  // collision only — no selectable geometry
+  core::info("AODNA walk floor at z=" + std::to_string(z) + " (context only, not saved)");
+}
+
 
 NodePath makeMarker(const LColor &c, float s) {
   PT(GeomVertexData) vd = new GeomVertexData("m", GeomVertexFormat::get_v3c4(), Geom::UH_static);

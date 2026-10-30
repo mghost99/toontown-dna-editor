@@ -77,7 +77,8 @@ int main(int argc, char **argv) {
   installCodecs();
   if (const char *pw = getenv("DNAED_PDNA_PASSWORD")) if (*pw) dna::setSessionPassword(pw);
   std::string res, file, selftest, snapPath; platform::Options o; int preSel = -1; int preOp = -1;
-  bool doSave = false; float dpos[3] = {0, 0, 0}; bool haveDpos = false;
+  bool doSave = false;
+  bool previewEffects = false; float dpos[3] = {0, 0, 0}; bool haveDpos = false;
   float dscale = 0; bool haveDscale = false;
   std::string convIn, convOut; bool encryptOut = false;
   for (int i = 1; i < argc; i++) {
@@ -97,6 +98,7 @@ int main(int argc, char **argv) {
       haveDscale = sscanf(argv[++i], "%f", &dscale) >= 1;
     } else if (a == "--save") doSave = true;
     else if (a == "--snap-and-exit" && i + 1 < argc) snapPath = argv[++i];
+    else if (a == "--preview-effects") previewEffects = true;
     else if (a == "--size" && i + 1 < argc) sscanf(argv[++i], "%dx%d", &o.width, &o.height);
     else if (a == "-h" || a == "--help") {
       printf("usage: dna-editor [--res RESOURCES_DIR (else DNAED_RES, config.ini, auto)] [--size WxH] [--offscreen] [--selftest OUT_DIR] [--password PW (else DNAED_PDNA_PASSWORD)] [--convert IN OUT [--encrypt]] [DNA_FILE (.xml/.dna/.pdna)]\n"); return 0;
@@ -166,7 +168,9 @@ int main(int argc, char **argv) {
     if (!ok) { app.close(); return 1; }
   }
   if (!snapPath.empty()) {   // real-window smoke test: render a few frames, screenshot, exit
-    for (int i = 0; i < 8; i++) app.step([&] { ed.frame(); });
+    if (previewEffects) ed.setPreviewEffects(true);
+    int nFrames = previewEffects ? 48 : 8;   // enough for odd/even flash cycle
+    for (int i = 0; i < nFrames; i++) app.step([&] { ed.frame(); });
     bool ok = app.screenshot(snapPath);
     printf("snap %s: %s\n", snapPath.c_str(), ok ? "ok" : "FAILED");
     app.close(); return ok ? 0 : 1;

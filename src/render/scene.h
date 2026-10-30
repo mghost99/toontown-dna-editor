@@ -26,11 +26,18 @@ class Scene {
   void buildAdded(const dna::Document &doc, int i, assets::Storage &st);
   void syncItem(const dna::Document &doc, int i);   // transform + visibility from the item
   void setVisgroupVisible(const std::string &zone, bool v);
+  // ATTACH-TO-MODEL parent ghost opacity (1 = solid). Ghost stays non-selectable.
+  void setParentGhostAlpha(float a);
+  float parentGhostAlpha() const { return parentGhostAlpha_; }
   LPoint3 boundsMin, boundsMax;
   void computeBounds();
   int stats_nodes = 0;
   std::vector<PT(AnimControl)> animations;
  private:
+  float parentGhostAlpha_ = 1.f;   // default solid (user preference)
+  void applyParentGhostAlpha(NodePath ghost) const;
+  NodePath walkFloor_;   // AODNA-only collidable ground (never selectable / never saved)
+  void ensureWalkFloor(const dna::Document &doc);
   void gen(const dna::XmlNode *n, NodePath parent, const std::string &src, assets::Storage &st,
            const std::map<const dna::XmlNode *, int> *ids, float *wallHeight, const dna::XmlNode *flat);
   std::map<std::string, int> unknownTags_;

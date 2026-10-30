@@ -124,7 +124,7 @@ void Walker::step(NodePath scene, float dt, float forward, float turn, bool jump
     if (floor(scene, height) && velocity_ <= 0 && root.get_z() <= height + 0.15f) {
       root.set_z(height); velocity_ = 0; grounded = true; lastFloor_ = height;
     } else grounded = false;
-    if (root.get_z() < lastFloor_ - 100) { root.set_z(lastFloor_ + 5); velocity_ = 0; }
+    if (root.get_z() < lastFloor_ - 20) { root.set_z(lastFloor_ + 2); velocity_ = 0; grounded = true; }  // fall-safety respawn
   }
   play(grounded && std::fabs(forward) > 0.01f ? "run" : "neutral");
 }

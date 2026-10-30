@@ -10,6 +10,13 @@
 #include "geom.h"
 #include "geomPrimitive.h"
 #include "config_putil.h"
+#include "textNode.h"
+#include "billboardEffect.h"
+#include "clockObject.h"
+#include "texture.h"
+#include "cardMaker.h"
+#include "transparencyAttrib.h"
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -26,6 +33,8 @@ static std::string fmt(const char *f, ...) {
 Editor::Editor(platform::App &app, std::string res) : resRoot(std::move(res)), app_(app) {
   std::string speed = core::readConfig("camera_wheel_speed");
   if (!speed.empty()) { float value = strtof(speed.c_str(), nullptr); if (std::isfinite(value)) wheelSpeed = std::clamp(value, 0.1f, 50.f); }
+  { std::string ic = core::readConfig("invert_camera"); if (ic == "0") invertCamera_ = false; else if (ic == "1") invertCamera_ = true; }
+  { std::string iy = core::readConfig("invert_camera_y"); if (iy == "0") invertCameraY_ = false; else if (iy == "1") invertCameraY_ = true; }
   assets::ModelCache::get().setResRoot(resRoot);
   get_model_path().prepend_directory(Filename::from_os_specific(resRoot));
   GraphicsOutput *w = app.win();
@@ -610,13 +619,16 @@ void Editor::viewport3D() {
   if (own && ImGui::IsMouseDown(1) && !io.KeyShift) orbiting_ = true;
   if (!own || (!ImGui::IsMouseDown(1) && !ImGui::IsMouseDown(2))) orbiting_ = false;
   if (own && (orbiting_ || pan) && (io.MouseDelta.x || io.MouseDelta.y)) {
+    float sx = invertCamera_ ? 1.f : -1.f;
+    float sy = (invertCamera_ && invertCameraY_) ? 1.f : (invertCamera_ ? -1.f : (invertCameraY_ ? -1.f : 1.f));
+    // Default invertCamera_=true: grab-the-world (view follows mouse). Off = classic orbit.
     if (pan) {
       LVector3 right = scene.world.get_relative_vector(v3->cam, LVector3(1, 0, 0)), up = scene.world.get_relative_vector(v3->cam, LVector3(0, 0, 1));
       float k = std::max(v3->dist, 12.f) * 0.0016f;
-      v3->target -= right * io.MouseDelta.x * k; v3->target += up * io.MouseDelta.y * k;
+      v3->target -= right * io.MouseDelta.x * k * sx; v3->target += up * io.MouseDelta.y * k * sy;
     } else if (orbiting_) {
       LPoint3 camPos = v3->target - viewFwd() * v3->dist;
-      v3->yaw -= io.MouseDelta.x * 0.3f; v3->pitch -= io.MouseDelta.y * 0.3f;
+      v3->yaw -= io.MouseDelta.x * 0.3f * sx; v3->pitch -= io.MouseDelta.y * 0.3f * sy;
       v3->target = camPos + viewFwd() * v3->dist;
     }
   }
@@ -672,7 +684,9 @@ void Editor::viewport2D() {
   }
   if (own && (ImGui::IsMouseDown(1) || ImGui::IsMouseDown(2)) && (io.MouseDelta.x || io.MouseDelta.y)) {
     float k = v2->span / std::max(1.f, std::min(s.x, s.y));
-    v2->target[0] -= io.MouseDelta.x * k; v2->target[1] += io.MouseDelta.y * k;
+    float sx = invertCamera_ ? 1.f : -1.f;
+    float sy = (invertCamera_ && invertCameraY_) ? 1.f : (invertCamera_ ? -1.f : (invertCameraY_ ? -1.f : 1.f));
+    v2->target[0] -= io.MouseDelta.x * k * sx; v2->target[1] += io.MouseDelta.y * k * sy;
   }
   v2->apply();
   ImDrawList *dl = ImGui::GetWindowDrawList();
@@ -913,6 +927,186 @@ bool Editor::applyOverrideEffects() {
   return true;
 }
 
+
+void Editor::setPreviewEffects(bool on) {
+  ovPreviewEffects_ = on;
+  if (!on) clearEffectsPreview();
+}
+
+void Editor::setAnimateBats(bool on) {
+  ovAnimateBats_ = on;
+  if (!on) updateBatsPreview();  // restore rest pose
+}
+
+void Editor::clearEffectsPreview() {
+  // Restore lantern color scales; drop index labels / halos / fog. Never touches XML.
+  for (int i = 0; i < (int)doc.items.size() && i < (int)scene.itemNodes.size(); i++) {
+    auto &it = doc.items[i];
+    if (!it.node) continue;
+    if (it.node->attr("aodna_role") != "lantern" && it.node->attr("lantern_index").empty()) continue;
+    NodePath np = scene.itemNodes[i];
+    if (!np.is_empty()) np.clear_color_scale();
+  }
+  if (!fxPreviewRoot_.is_empty()) { fxPreviewRoot_.remove_node(); fxPreviewRoot_ = NodePath(); }
+  fxPreviewBuilt_ = false;
+}
+
+PT(Texture) Editor::ensureHaloTex() {
+  if (fxHaloTex_) return fxHaloTex_;
+  // Soft orange radial glow (procedural, 64x64).
+  const int N = 64;
+  PT(Texture) tex = new Texture("fxHalo");
+  tex->setup_2d_texture(N, N, Texture::T_unsigned_byte, Texture::F_rgba);
+  PTA_uchar img = tex->modify_ram_image();
+  for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) {
+    float u = (x + 0.5f) / N * 2.f - 1.f, v = (y + 0.5f) / N * 2.f - 1.f;
+    float d = std::sqrt(u * u + v * v);
+    float a = std::clamp(1.f - d, 0.f, 1.f); a = a * a * (3.f - 2.f * a);
+    int i = (y * N + x) * 4;
+    img[i] = 255; img[i+1] = (unsigned char)(180); img[i+2] = 60; img[i+3] = (unsigned char)(a * 255);
+  }
+  tex->set_wrap_u(SamplerState::WM_clamp); tex->set_wrap_v(SamplerState::WM_clamp);
+  fxHaloTex_ = tex; return fxHaloTex_;
+}
+
+PT(Texture) Editor::ensureCloudTex() {
+  if (fxCloudTex_) return fxCloudTex_;
+  const int N = 64;
+  PT(Texture) tex = new Texture("fxCloud");
+  tex->setup_2d_texture(N, N, Texture::T_unsigned_byte, Texture::F_rgba);
+  PTA_uchar img = tex->modify_ram_image();
+  for (int y = 0; y < N; y++) for (int x = 0; x < N; x++) {
+    float u = (x + 0.5f) / N * 2.f - 1.f, v = (y + 0.5f) / N * 2.f - 1.f;
+    float d = std::sqrt(u * u + v * v * 0.6f);
+    float a = std::clamp(1.f - d, 0.f, 1.f); a = a * a;
+    int i = (y * N + x) * 4;
+    // soft lavender
+    img[i] = 200; img[i+1] = 180; img[i+2] = 230; img[i+3] = (unsigned char)(a * 200);
+  }
+  tex->set_wrap_u(SamplerState::WM_clamp); tex->set_wrap_v(SamplerState::WM_clamp);
+  fxCloudTex_ = tex; return fxCloudTex_;
+}
+
+void Editor::updateBatsPreview() {
+  // Flap/bob when Animate bats is on; restore rest pose when off. Never writes XML.
+  // Minimal: toggle a small Z bob + HPR wiggle on aodna_role=bat props.
+  double now = ClockObject::get_global_clock()->get_frame_time();
+  for (int i = 0; i < (int)doc.items.size() && i < (int)scene.itemNodes.size(); i++) {
+    auto &it = doc.items[i];
+    if (!it.node) continue;
+    if (it.node->attr("aodna_role") != "bat") continue;
+    NodePath np = scene.itemNodes[i];
+    if (np.is_empty()) continue;
+    if (!ovAnimateBats_) {
+      // Rest: sync from document xform
+      scene.syncItem(doc, i);
+      continue;
+    }
+    float phase = (float)now * 6.f + (float)i * 0.7f;
+    float bob = std::sin(phase) * 0.35f;
+    float flap = std::sin(phase * 2.f) * 12.f;
+    np.set_pos(it.xf.x, it.xf.y, it.xf.z + bob);
+    np.set_hpr(it.xf.h, it.xf.p + flap * 0.15f, it.xf.r + flap);
+  }
+}
+
+void Editor::updateEffectsPreview() {
+  if (!ovPreviewEffects_ || !isAppearanceOverride()) return;
+  // Match HalloweenGazeboLanterns: odds (index 0,2,4 → labels 1,3,5) then evens.
+  const LColor ON(1.20f, 0.95f, 0.55f, 1.f), OFF(0.50f, 0.34f, 0.20f, 1.f);
+  float speed = std::max(0.25f, ovFxFlashSpeed_);
+  float fade = 0.90f / speed, hold = 0.70f / speed;
+  float half = fade + hold, cycle = 2.f * half;
+  double now = ClockObject::get_global_clock()->get_frame_time();
+  float t = (float)std::fmod(now, (double)cycle);
+  bool oddsBright = t < half;
+  float phase = oddsBright ? t : (t - half);
+  float u = phase < fade ? (phase / fade) : 1.f;  // 0→1 during fade, hold at 1
+  // ease in-out
+  float e = u * u * (3.f - 2.f * u);
+
+  struct Lamp { int idx; int item; NodePath np; };
+  std::vector<Lamp> lamps;
+  for (int i = 0; i < (int)doc.items.size() && i < (int)scene.itemNodes.size(); i++) {
+    auto &it = doc.items[i];
+    if (!it.node || it.deleted) continue;
+    std::string li = it.node->attr("lantern_index");
+    if (it.node->attr("aodna_role") != "lantern" && li.empty()) continue;
+    int idx = li.empty() ? (int)lamps.size() : atoi(li.c_str());
+    NodePath np = scene.itemNodes[i];
+    if (np.is_empty()) continue;
+    lamps.push_back({idx, i, np});
+  }
+  std::sort(lamps.begin(), lamps.end(), [](const Lamp &a, const Lamp &b) { return a.idx < b.idx; });
+
+  auto lerpC = [](const LColor &a, const LColor &b, float f) {
+    return LColor(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f,
+                  a[2] + (b[2] - a[2]) * f, a[3] + (b[3] - a[3]) * f);
+  };
+
+  if (fxPreviewRoot_.is_empty()) fxPreviewRoot_ = scene.world.attach_new_node("fxPreviewLabels");
+  fxPreviewRoot_.get_children().detach();
+
+  PT(Texture) haloTex = ensureHaloTex();
+  float haloSize = ovFxLanternSize_;
+  float haloInt = ovFxLanternIntensity_;
+
+  for (auto &L : lamps) {
+    bool odd = (L.idx % 2) == 0;  // game: lanternIndex%2==0 → odds group (labels 1,3,5)
+    LColor bright = ON, dim = OFF;
+    LColor col;
+    if (odd) col = oddsBright ? lerpC(dim, bright, e) : lerpC(bright, dim, e);
+    else     col = oddsBright ? lerpC(bright, dim, e) : lerpC(dim, bright, e);
+    L.np.set_color_scale(col);
+
+    // 1-based label
+    PT(TextNode) tn = new TextNode("lanternIdx");
+    tn->set_text(std::to_string(L.idx + 1));
+    tn->set_align(TextNode::A_center);
+    tn->set_text_color(1, 0.95f, 0.4f, 1);
+    NodePath lab = fxPreviewRoot_.attach_new_node(tn);
+    lab.set_scale(0.55f);
+    lab.set_pos(L.np.get_pos(scene.world) + LVector3(0, 0, 1.8f));
+    lab.set_effect(BillboardEffect::make_point_eye());
+    lab.set_bin("fixed", 60);
+    lab.set_depth_test(false); lab.set_depth_write(false);
+
+    // Soft halo card
+    CardMaker cm("halo");
+    cm.set_frame(-haloSize, haloSize, -haloSize, haloSize);
+    NodePath halo = fxPreviewRoot_.attach_new_node(cm.generate());
+    halo.set_texture(haloTex);
+    halo.set_transparency(TransparencyAttrib::M_alpha);
+    float ha = (odd == oddsBright ? e : (1.f - e)) * haloInt;
+    halo.set_color_scale(1.f, 0.7f, 0.25f, ha);
+    halo.set_pos(L.np.get_pos(scene.world));
+    halo.set_effect(BillboardEffect::make_point_eye());
+    halo.set_bin("transparent", 20);
+    halo.set_depth_write(false);
+  }
+
+  // Simple ground-fog wisps (a few billboard cards) — live only.
+  PT(Texture) cloud = ensureCloudTex();
+  float rad = ovFxMistRadius_, opac = ovFxMistOpacity_, hgt = ovFxMistHeight_;
+  for (int k = 0; k < 8; k++) {
+    float ang = (float)k / 8.f * 6.28318f + (float)now * ovFxMistSpeed_ * 0.4f;
+    float r = rad * (0.55f + 0.35f * std::sin(ang * 1.7f + k));
+    CardMaker cm("fog");
+    float s = 2.2f + 0.6f * std::sin((float)now + k);
+    cm.set_frame(-s, s, -s * 0.45f, s * 0.45f);
+    NodePath fog = fxPreviewRoot_.attach_new_node(cm.generate());
+    fog.set_texture(cloud);
+    fog.set_transparency(TransparencyAttrib::M_alpha);
+    fog.set_color_scale(0.78f, 0.70f, 0.90f, opac * (0.6f + 0.4f * std::sin((float)now * 0.7f + k)));
+    fog.set_pos(std::cos(ang) * r, std::sin(ang) * r, hgt * 0.5f);
+    fog.set_effect(BillboardEffect::make_point_eye());
+    fog.set_bin("transparent", 15);
+    fog.set_depth_write(false);
+  }
+  fxPreviewBuilt_ = true;
+}
+
+
 void Editor::overridePanel() {
   if (!isAppearanceOverride()) return;  // opt-in: never show on normal DNA
   ImGui::Begin("Appearance Override");
@@ -1024,6 +1218,29 @@ if (ImGui::Button("Use selected code") && !selection.empty()) {
   ImGui::SetNextItemWidth(120); ImGui::DragFloat("lanternGlowSize", &ovFxLanternSize_, 0.01f, 0.9f, 2.2f, "%.3f");
   ImGui::SameLine(); ImGui::SetNextItemWidth(120); ImGui::DragFloat("lanternGlowIntensity", &ovFxLanternIntensity_, 0.01f, 0.05f, 1.0f, "%.3f");
   ImGui::SetNextItemWidth(120); ImGui::DragFloat("flashSpeed", &ovFxFlashSpeed_, 0.01f, 0.25f, 2.5f, "%.3f");
+  {
+    bool prev = ovPreviewEffects_;
+    if (ImGui::Checkbox("Preview effects", &prev)) setPreviewEffects(prev);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(odd/even flash + 1-6 labels; live only, no XML)");
+  }
+  {
+    bool bats = ovAnimateBats_;
+    if (ImGui::Checkbox("Animate bats", &bats)) setAnimateBats(bats);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(flap/bob preview; OFF by default)");
+  }
+  {
+    float a = scene.parentGhostAlpha();
+    bool solid = a >= 0.999f;
+    if (ImGui::Checkbox("Solid parent model", &solid))
+      scene.setParentGhostAlpha(solid ? 1.f : 0.45f);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(100);
+    if (ImGui::DragFloat("opacity##parentGhost", &a, 0.01f, 0.1f, 1.f, "%.2f"))
+      scene.setParentGhostAlpha(a);
+    ImGui::TextDisabled("Parent ghost stays non-selectable either way.");
+  }
   if (ImGui::Button("Apply effects to XML")) applyOverrideEffects();
 
   if (overrideDirty_ || doc.textDirty)
@@ -1110,6 +1327,24 @@ void Editor::menuBar() {
     if (ImGui::MenuItem("Game lighting (unlit)", "L", m == render::LightMode::Game)) setLight(render::LightMode::Game);
     if (ImGui::MenuItem("Lit (sun + ambient)", nullptr, m == render::LightMode::Lit)) setLight(render::LightMode::Lit);
     if (ImGui::MenuItem("Cog mood (smog, dusk)", nullptr, m == render::LightMode::CogMood)) setLight(render::LightMode::CogMood);
+    ImGui::Separator();
+    if (ImGui::MenuItem("Invert camera", nullptr, invertCamera_)) {
+      invertCamera_ = !invertCamera_;
+      core::writeConfig("invert_camera", invertCamera_ ? "1" : "0");
+    }
+    if (ImGui::MenuItem("Invert camera Y", nullptr, invertCameraY_)) {
+      invertCameraY_ = !invertCameraY_;
+      core::writeConfig("invert_camera_y", invertCameraY_ ? "1" : "0");
+    }
+    if (isAppearanceOverride()) {
+      bool solid = scene.parentGhostAlpha() >= 0.999f;
+      if (ImGui::MenuItem("Solid parent model", nullptr, solid))
+        scene.setParentGhostAlpha(solid ? 0.45f : 1.f);
+      bool prev = ovPreviewEffects_;
+      if (ImGui::MenuItem("Preview effects", nullptr, prev)) setPreviewEffects(!prev);
+      bool bats = ovAnimateBats_;
+      if (ImGui::MenuItem("Animate bats", nullptr, bats)) setAnimateBats(!bats);
+    }
     ImGui::Separator();
     if (ImGui::MenuItem("Walk through map", "F5", walker.active(), !doc.path.empty())) toggleWalker();
     ImGui::MenuItem("3D view", nullptr, &show3D_);
@@ -1342,6 +1577,8 @@ void Editor::frame() {
   if (showLog_) { ImGui::Begin("Log", &showLog_); if (showLog_) ui::logPanel(&logAuto_); ImGui::End(); }
   statsPanel();
   overridePanel();
+  updateEffectsPreview();
+  updateBatsPreview();
   if (showHelp_) {
     ImGui::SetNextWindowSize(ImVec2(610, std::min(760.f, vp->WorkSize.y - 60)), ImGuiCond_FirstUseEver);
     ImGui::Begin("Shortcuts", &showHelp_); ui::helpPanel(); ImGui::End();

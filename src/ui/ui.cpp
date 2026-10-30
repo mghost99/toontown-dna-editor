@@ -173,6 +173,16 @@ int inspectorPanel(dna::Item *it, int index, dna::Xform &x, const dna::Document 
   info("Visgroup", it->visgroup);
   info("Index", std::to_string(index));
   if (it->kind == "flat_building") info("Width", std::to_string((int)it->width) + " ft");
+  // Appearance Override lanterns: show 1-based game order (lantern_index attr is 0-based).
+  if (it->node) {
+    std::string li = it->node->attr("lantern_index");
+    std::string role = it->node->attr("aodna_role");
+    if (!li.empty() || role == "lantern") {
+      int li0 = 0;
+      if (!li.empty()) { try { li0 = std::stoi(li); } catch (...) { li0 = 0; } }
+      info("Lantern index", std::to_string(li0 + 1) + " of 6");
+    }
+  }
 
   if (doc && it->node) {
     std::vector<SignLine> lines;
@@ -382,7 +392,10 @@ void helpPanel() {
     {"ATTACH-TO-MODEL", "Set parent_code (e.g. prop_gazebo) and optional parent_node. Pos/hpr/scale are local to that model. Attach selected stamps the attr."},
     {"Hide / Replace / Recolor", "Select a prop or type its DNA code in the panel, then click the button. Save with Ctrl+S."},
     {"gate / holidays", "always, holiday, or date. Holiday names match the game (e.g. HALLOWEEN_PROPS)."},
-    {"Effects / lighting", "<effect type=ground_fog|lantern_glow> with ~lightTuner Gazebo field names. Apply effects, then Ctrl+S."}});
+    {"Effects / lighting", "<effect type=ground_fog|lantern_glow> with ~lightTuner Gazebo field names. Apply effects, then Ctrl+S."},
+    {"Preview effects", "Live odd/even lantern flash + 1–6 labels. Never writes XML."},
+    {"Solid parent model", "Parent ghost opacity (default solid). Non-selectable either way."},
+    {"Invert camera", "Grab-the-world orbit/pan (default on). View menu; Invert Y for pitch only."}});
 }
 
 
