@@ -16,6 +16,9 @@
 #include "texture.h"
 #include "cardMaker.h"
 #include "transparencyAttrib.h"
+#include "nodePathCollection.h"
+#include "depthOffsetAttrib.h"
+#include "colorBlendAttrib.h"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -75,7 +78,14 @@ bool Editor::open(const std::string &f) {
   storage_.clear(); storage_.addFiles(st);
   std::string sl; for (auto &s : st) sl += (sl.empty() ? "" : ", ") + fs::path(s).filename().string();
   core::info("storage for " + doc.rel + ": " + sl);
-  for (auto &u : undef) core::warn("code used by this file but defined in no storage file: " + u);
+  for (auto &u : undef) {
+    // Appearance Override ADDs that also carry model= load their BAM directly (game + editor);
+    // a missing storage code there is fine, so only warn for code-only uses.
+    bool hasModel = false;
+    dna::walk(doc.root.get(), [&](const dna::XmlNode *n) {
+      if (!hasModel && n->attr("code") == u && !n->attr("model").empty()) hasModel = true; });
+    if (!hasModel) core::warn("code used by this file but defined in no storage file: " + u);
+  }
   history.clear(); selection.clear(); boxes_.clear(); editing_ = false; dragging_ = dragArmed_ = false; overrideDirty_ = false; ovFxLoaded_ = false;
   { ScopedTimer t("generate scene (models+textures)"); scene.build(doc, storage_); }
   vgVisible_.clear(); for (auto &v : doc.visgroups) vgVisible_[v] = true;
@@ -321,9 +331,13 @@ bool Editor::openPreview(int ci) {
 int Editor::placePreviewed() {
   if (previewIdx_ < 0 || doc.path.empty()) return -1;
   auto &e = catalog[previewIdx_];
+  // Appearance Override ADDs carry model= so the game can load the BAM even when the
+  // hood's storage files don't define the code (e.g. new TTEX Halloween props).
+  const bool ovModel = isAppearanceOverride() && !e.model.empty();
   if (!loadedCodes_.count(e.code)) {
     storage_.addCode(e.code, e.model, e.node, e.storageRel); loadedCodes_.insert(e.code);
-    core::warn("placed " + e.code + " from " + e.storageRel + ", which this DNA's storage files do not load: the game will not show it unless that storage is added");
+    if (!ovModel)
+      core::warn("placed " + e.code + " from " + e.storageRel + ", which this DNA's storage files do not load: the game will not show it unless that storage is added");
   }
   if (previewAnimation_.empty() && !previewAnimations_.empty())
     core::warn("placed " + e.code + " as a plain prop: its animations are embedded in the model, so no anim name is written");
@@ -331,6 +345,7 @@ int Editor::placePreviewed() {
   it.code = e.code; it.name = e.code;
   it.visgroup = !selection.empty() ? doc.items[selection[0]].visgroup : (doc.visgroups.empty() ? "" : doc.visgroups[0]);
   it.templateXml = "<" + it.kind + " name=\"" + e.code + "\" code=\"" + e.code + "\"";
+  if (ovModel) it.templateXml += " model=\"" + e.model + "\"";
   if (!previewAnimation_.empty()) it.templateXml += " anim=\"" + previewAnimation_ + "\"";
   if (it.kind == "interactive_prop") it.templateXml += " cell_id=\"0\"";
   // ATTACH-TO-MODEL: when editing an Appearance Override, stamp parent_code so the
@@ -885,6 +900,9 @@ void Editor::loadOverrideEffectsFromDoc() {
   grab("lantern_glow", "lanternGlowSize", ovFxLanternSize_);
   grab("lantern_glow", "lanternGlowIntensity", ovFxLanternIntensity_);
   grab("lantern_glow", "flashSpeed", ovFxFlashSpeed_);
+  grab("lantern_glow", "faceGlow", ovFxFaceGlow_);
+  grab("lantern_glow", "flickerAmount", ovFxFlickerAmount_);
+  grab("lantern_glow", "flickerSpeed", ovFxFlickerSpeed_);
 }
 
 bool Editor::applyOverrideEffects() {
@@ -898,7 +916,8 @@ bool Editor::applyOverrideEffects() {
       "\" mistHue=\"" + fmtf(ovFxMistHue_) + "\" mistRadius=\"" + fmtf(ovFxMistRadius_) + "\"/>";
   std::string glow = "<effect type=\"lantern_glow\" target=\"gazebo\" lanternGlowSize=\"" +
       fmtf(ovFxLanternSize_) + "\" lanternGlowIntensity=\"" + fmtf(ovFxLanternIntensity_) +
-      "\" flashSpeed=\"" + fmtf(ovFxFlashSpeed_) + "\"/>";
+      "\" flashSpeed=\"" + fmtf(ovFxFlashSpeed_) + "\" faceGlow=\"" + fmtf(ovFxFaceGlow_) +
+      "\" flickerAmount=\"" + fmtf(ovFxFlickerAmount_) + "\" flickerSpeed=\"" + fmtf(ovFxFlickerSpeed_) + "\"/>";
   auto repl = [&](const char *type, const std::string &el) {
     std::string needle = std::string("type=\"") + type + "\"";
     size_t p = doc.text.find(needle);
@@ -935,20 +954,64 @@ void Editor::setPreviewEffects(bool on) {
 
 void Editor::setAnimateBats(bool on) {
   ovAnimateBats_ = on;
-  if (!on) updateBatsPreview();  // restore rest pose
+  if (!on) {
+    updateBatsPreview();  // drops the wing-texture override
+    for (int i = 0; i < (int)doc.items.size() && i < (int)scene.itemNodes.size(); i++)
+      if (doc.items[i].node && doc.items[i].node->attr("aodna_role") == "bat") scene.syncItem(doc, i);
+  }
 }
 
 void Editor::clearEffectsPreview() {
-  // Restore lantern color scales; drop index labels / halos / fog. Never touches XML.
+  // Restore lantern/pumpkin colour; drop face decals, labels, halos, fog. Never touches XML.
   for (int i = 0; i < (int)doc.items.size() && i < (int)scene.itemNodes.size(); i++) {
-    auto &it = doc.items[i];
-    if (!it.node) continue;
-    if (it.node->attr("aodna_role") != "lantern" && it.node->attr("lantern_index").empty()) continue;
     NodePath np = scene.itemNodes[i];
-    if (!np.is_empty()) np.clear_color_scale();
+    if (np.is_empty()) continue;
+    NodePath dec = np.find("**/fx_face_glow");
+    if (!dec.is_empty()) dec.remove_node();
+    NodePath fg = np.find("**/face_glow");
+    if (!fg.is_empty()) fg.clear_color_scale();
+    auto &it = doc.items[i];
+    if (it.node && (it.node->attr("aodna_role") == "lantern" || !it.node->attr("lantern_index").empty()))
+      np.clear_color_scale();
   }
   if (!fxPreviewRoot_.is_empty()) { fxPreviewRoot_.remove_node(); fxPreviewRoot_ = NodePath(); }
   fxPreviewBuilt_ = false;
+}
+
+// Face-only glow layer for a jack-o'-lantern, matching the game's HalloweenFaceGlow:
+// TTEX pumpkins ship a "face_glow" child; the legacy hanging lantern gets a cached decal
+// (its own geometry re-textured with the carved-face alpha mask, added on top).
+NodePath Editor::faceLayerFor(NodePath np, bool &decal) {
+  decal = false;
+  if (np.is_empty()) return NodePath();
+  NodePath fg = np.find("**/face_glow");
+  if (!fg.is_empty()) { fg.set_light_off(1); return fg; }
+  NodePath dec = np.find("**/fx_face_glow");
+  if (!dec.is_empty()) { decal = true; return dec; }
+  if (!fxFaceMaskTex_)
+    fxFaceMaskTex_ = assets::ModelCache::get().texture("phase_4/models/props/ttex_t_prop_halloween_hanging_lantern_faceglow.png");
+  if (!fxFaceMaskTex_) return NodePath();
+  NodePathCollection geoms = np.find_all_matches("**/+GeomNode");
+  if (geoms.get_num_paths() == 0) return NodePath();
+  dec = np.attach_new_node("fx_face_glow");
+  for (int k = 0; k < geoms.get_num_paths(); k++) {
+    NodePath g = geoms.get_path(k);
+    if (dec.is_ancestor_of(g)) continue;
+    NodePath cpy = g.copy_to(dec);
+    cpy.set_transform(g.get_transform(np));
+  }
+  dec.set_texture(fxFaceMaskTex_, 100);
+  dec.set_material_off(100);
+  dec.set_light_off(100);
+  dec.set_transparency(TransparencyAttrib::M_alpha);
+  dec.set_attrib(ColorBlendAttrib::make(ColorBlendAttrib::M_add, ColorBlendAttrib::O_incoming_alpha,
+                                        ColorBlendAttrib::O_one), 100);
+  dec.set_depth_write(false);
+  dec.set_attrib(DepthOffsetAttrib::make(2));
+  dec.set_bin("fixed", 30);
+  dec.set_tag("fx_preview", "1");
+  decal = true;
+  return dec;
 }
 
 PT(Texture) Editor::ensureHaloTex() {
@@ -988,32 +1051,35 @@ PT(Texture) Editor::ensureCloudTex() {
 }
 
 void Editor::updateBatsPreview() {
-  // Flap/bob when Animate bats is on; restore rest pose when off. Never writes XML.
-  // Minimal: toggle a small Z bob + HPR wiggle on aodna_role=bat props.
+  // Animate bats = the game's two-card wing swap (wings_up <-> wings_down texture), each bat
+  // on its own phase. It never moves the node, so gizmo edits always land on the rest pose
+  // (it.xf). Off (default): drop the texture override so the authored PNG shows. No XML.
+  if (!ovAnimateBats_ && !fxBatsSwapped_) return;
   double now = ClockObject::get_global_clock()->get_frame_time();
+  const double HALF = 0.11;  // matches game BAT_FLAP_HALF
+  if (ovAnimateBats_ && (!fxBatUpTex_ || !fxBatDownTex_)) {
+    fxBatUpTex_ = assets::ModelCache::get().texture("phase_4/models/props/tt_t_ara_prop_halloween_bat_wings_up.png");
+    fxBatDownTex_ = assets::ModelCache::get().texture("phase_4/models/props/tt_t_ara_prop_halloween_bat_wings_down.png");
+  }
+  int n = 0;
   for (int i = 0; i < (int)doc.items.size() && i < (int)scene.itemNodes.size(); i++) {
     auto &it = doc.items[i];
     if (!it.node) continue;
     if (it.node->attr("aodna_role") != "bat") continue;
     NodePath np = scene.itemNodes[i];
     if (np.is_empty()) continue;
-    if (!ovAnimateBats_) {
-      // Rest: sync from document xform
-      scene.syncItem(doc, i);
-      continue;
-    }
-    float phase = (float)now * 6.f + (float)i * 0.7f;
-    float bob = std::sin(phase) * 0.35f;
-    float flap = std::sin(phase * 2.f) * 12.f;
-    np.set_pos(it.xf.x, it.xf.y, it.xf.z + bob);
-    np.set_hpr(it.xf.h, it.xf.p + flap * 0.15f, it.xf.r + flap);
+    if (!ovAnimateBats_ || !fxBatUpTex_ || !fxBatDownTex_) { np.clear_texture(); continue; }
+    double phase = std::fmod(n * 0.37, 2 * HALF);
+    bool up = ((long long)std::floor((now + phase) / HALF)) % 2 == 0;
+    np.set_texture(up ? fxBatUpTex_ : fxBatDownTex_, 100);
+    n++;
   }
+  fxBatsSwapped_ = ovAnimateBats_;
 }
 
 void Editor::updateEffectsPreview() {
   if (!ovPreviewEffects_ || !isAppearanceOverride()) return;
   // Match HalloweenGazeboLanterns: odds (index 0,2,4 → labels 1,3,5) then evens.
-  const LColor ON(1.20f, 0.95f, 0.55f, 1.f), OFF(0.50f, 0.34f, 0.20f, 1.f);
   float speed = std::max(0.25f, ovFxFlashSpeed_);
   float fade = 0.90f / speed, hold = 0.70f / speed;
   float half = fade + hold, cycle = 2.f * half;
@@ -1025,19 +1091,28 @@ void Editor::updateEffectsPreview() {
   // ease in-out
   float e = u * u * (3.f - 2.f * u);
 
-  struct Lamp { int idx; int item; NodePath np; };
+  struct Lamp { int idx; int item; NodePath np; bool lantern; };
   std::vector<Lamp> lamps;
+  int pumpkinN = 0;
   for (int i = 0; i < (int)doc.items.size() && i < (int)scene.itemNodes.size(); i++) {
     auto &it = doc.items[i];
     if (!it.node || it.deleted) continue;
-    std::string li = it.node->attr("lantern_index");
-    if (it.node->attr("aodna_role") != "lantern" && li.empty()) continue;
-    int idx = li.empty() ? (int)lamps.size() : atoi(li.c_str());
     NodePath np = scene.itemNodes[i];
     if (np.is_empty()) continue;
-    lamps.push_back({idx, i, np});
+    std::string li = it.node->attr("lantern_index");
+    bool lantern = it.node->attr("aodna_role") == "lantern" || !li.empty();
+    if (!lantern) {
+      // TTEX pumpkins with a carved face_glow layer flash with the lanterns too
+      if (np.find("**/face_glow").is_empty()) continue;
+      int idx = li.empty() ? pumpkinN++ : atoi(li.c_str());
+      lamps.push_back({idx, i, np, false});
+      continue;
+    }
+    int idx = li.empty() ? (int)lamps.size() : atoi(li.c_str());
+    lamps.push_back({idx, i, np, true});
   }
-  std::sort(lamps.begin(), lamps.end(), [](const Lamp &a, const Lamp &b) { return a.idx < b.idx; });
+  std::sort(lamps.begin(), lamps.end(), [](const Lamp &a, const Lamp &b) {
+    return a.lantern != b.lantern ? a.lantern : a.idx < b.idx; });
 
   auto lerpC = [](const LColor &a, const LColor &b, float f) {
     return LColor(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f,
@@ -1050,14 +1125,33 @@ void Editor::updateEffectsPreview() {
   PT(Texture) haloTex = ensureHaloTex();
   float haloSize = ovFxLanternSize_;
   float haloInt = ovFxLanternIntensity_;
+  const float g = std::clamp(ovFxFaceGlow_, 0.f, 2.f);
+  const float amt = std::clamp(ovFxFlickerAmount_, 0.f, 1.f), fsp = std::max(0.05f, ovFxFlickerSpeed_);
 
   for (auto &L : lamps) {
     bool odd = (L.idx % 2) == 0;  // game: lanternIndex%2==0 → odds group (labels 1,3,5)
-    LColor bright = ON, dim = OFF;
-    LColor col;
-    if (odd) col = oddsBright ? lerpC(dim, bright, e) : lerpC(bright, dim, e);
-    else     col = oddsBright ? lerpC(bright, dim, e) : lerpC(dim, bright, e);
-    L.np.set_color_scale(col);
+    float f = (odd == oddsBright) ? e : (1.f - e);   // 0 = dim, 1 = lit
+    // candle flicker (same sum of sines as HalloweenFaceGlow.flickerValue)
+    float seed = (float)(L.item % 7) * 1.618f;
+    float tt = (float)now;
+    float v = std::sin(tt * 7.3f * fsp + seed) * 0.45f + std::sin(tt * 13.1f * fsp + seed * 2.3f) * 0.35f +
+              std::sin(tt * 23.7f * fsp + seed * 4.1f) * 0.20f;
+    float flick = 1.f - amt * (0.5f + 0.5f * v);
+    if (L.lantern) L.np.set_color_scale(0.82f, 0.78f, 0.74f, 1.f);   // body steady; only the face glows
+    bool decal = false;
+    NodePath face = faceLayerFor(L.np, decal);
+    if (!face.is_empty()) {
+      if (decal) {
+        LColor on(1.f, 0.85f, 0.55f, std::min(1.f, 0.95f * g)), off(1.f, 0.7f, 0.4f, 0.04f * g);
+        LColor c = lerpC(off, on, f); c[3] *= flick;
+        face.set_color_scale(c);
+      } else {
+        LColor on(1.f + 0.55f * g, 1.f + 0.30f * g, 0.65f + 0.10f * g, 1.f), off(0.48f, 0.34f, 0.20f, 1.f);
+        LColor c = lerpC(off, on, f);
+        face.set_color_scale(c[0] * flick, c[1] * (0.94f * flick + 0.06f), c[2] * (0.85f * flick + 0.15f), 1.f);
+      }
+    }
+    if (!L.lantern) continue;   // pumpkins: no label / halo
 
     // 1-based label
     PT(TextNode) tn = new TextNode("lanternIdx");
@@ -1109,6 +1203,7 @@ void Editor::updateEffectsPreview() {
 
 void Editor::overridePanel() {
   if (!isAppearanceOverride()) return;  // opt-in: never show on normal DNA
+  if (getenv("DNAED_SNAP_HIDE_OVERRIDE")) return;   // snapshot hook: keep the 3D view clear
   ImGui::Begin("Appearance Override");
   ImGui::TextWrapped(
       "Opt-in holiday/appearance overlay. Normal DNA files never see this panel.\n"
@@ -1218,17 +1313,20 @@ if (ImGui::Button("Use selected code") && !selection.empty()) {
   ImGui::SetNextItemWidth(120); ImGui::DragFloat("lanternGlowSize", &ovFxLanternSize_, 0.01f, 0.9f, 2.2f, "%.3f");
   ImGui::SameLine(); ImGui::SetNextItemWidth(120); ImGui::DragFloat("lanternGlowIntensity", &ovFxLanternIntensity_, 0.01f, 0.05f, 1.0f, "%.3f");
   ImGui::SetNextItemWidth(120); ImGui::DragFloat("flashSpeed", &ovFxFlashSpeed_, 0.01f, 0.25f, 2.5f, "%.3f");
+  ImGui::SameLine(); ImGui::SetNextItemWidth(120); ImGui::DragFloat("faceGlow", &ovFxFaceGlow_, 0.01f, 0.0f, 2.0f, "%.3f");
+  ImGui::SetNextItemWidth(120); ImGui::DragFloat("flickerAmount", &ovFxFlickerAmount_, 0.01f, 0.0f, 1.0f, "%.3f");
+  ImGui::SameLine(); ImGui::SetNextItemWidth(120); ImGui::DragFloat("flickerSpeed", &ovFxFlickerSpeed_, 0.01f, 0.2f, 4.0f, "%.3f");
   {
     bool prev = ovPreviewEffects_;
     if (ImGui::Checkbox("Preview effects", &prev)) setPreviewEffects(prev);
     ImGui::SameLine();
-    ImGui::TextDisabled("(odd/even flash + 1-6 labels; live only, no XML)");
+    ImGui::TextDisabled("(face-only odd/even flash + candle flicker, 1-6 labels; live only, no XML)");
   }
   {
     bool bats = ovAnimateBats_;
     if (ImGui::Checkbox("Animate bats", &bats)) setAnimateBats(bats);
     ImGui::SameLine();
-    ImGui::TextDisabled("(flap/bob preview; OFF by default)");
+    ImGui::TextDisabled("(wing up/down swap like the game; OFF by default; edits always hit the rest pose)");
   }
   {
     float a = scene.parentGhostAlpha();

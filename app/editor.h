@@ -118,10 +118,14 @@ class Editor {
   float ovFxMistOpacity_ = 0.14f, ovFxMistDensity_ = 0.35f, ovFxMistHeight_ = 0.55f;
   float ovFxMistSpeed_ = 0.40f, ovFxMistHue_ = 0.28f, ovFxMistRadius_ = 8.0f;
   float ovFxLanternSize_ = 1.45f, ovFxLanternIntensity_ = 0.38f, ovFxFlashSpeed_ = 1.0f;
+  // Jack-o'-lantern face-only candle glow (game: HalloweenFaceGlow)
+  float ovFxFaceGlow_ = 1.0f, ovFxFlickerAmount_ = 0.35f, ovFxFlickerSpeed_ = 1.0f;
   bool ovPreviewEffects_ = true;           // Preview effects ON by default (live only, no XML)
   bool ovAnimateBats_ = false;             // Bat flap/bob OFF by default (placement-friendly)
   NodePath fxPreviewRoot_;                 // labels + fog + halos (not saved)
-  PT(Texture) fxHaloTex_, fxCloudTex_, fxBatUpTex_, fxBatDownTex_;
+  PT(Texture) fxHaloTex_, fxCloudTex_, fxBatUpTex_, fxBatDownTex_, fxFaceMaskTex_;
+  bool fxBatsSwapped_ = false;            // a wing texture override is on some bat
+  NodePath faceLayerFor(NodePath np, bool &decal);  // face_glow child or cached mask decal
   bool fxPreviewBuilt_ = false;
   void loadOverrideEffectsFromDoc();
   bool applyOverrideEffects();
