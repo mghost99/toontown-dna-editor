@@ -229,46 +229,6 @@ int inspectorPanel(dna::Item *it, int index, dna::Xform &x, const dna::Document 
     }
   }
 
-  if (doc && it->node && sign) {
-    ImGui::Dummy(ImVec2(0, 6));
-    ImGui::SeparatorText("Properties");
-    ImGui::TextWrapped("Expand a section to edit its values. Font codes refer to the loaded storage files.");
-    std::function<void(const dna::XmlNode *, bool)> properties = [&](const dna::XmlNode *node, bool top) {
-      ImGui::PushID((int)node->start);
-      bool expanded = top || ImGui::TreeNode(node->tag.c_str());
-      if (expanded) {
-        if (node->tag == "title" || node->tag == "texture") {
-          std::string value = dna::nodeText(node, doc->text);
-          char buf[4096]; snprintf(buf, sizeof buf, "%s", value.c_str());
-          ImGui::SetNextItemWidth(-1); ImGui::InputText("##text-value", buf, sizeof buf);
-          if (ImGui::IsItemDeactivatedAfterEdit() && value != buf) {
-            sign->node = node; sign->key = "@text"; sign->value = buf; sign->commit = true;
-          }
-        }
-        for (auto &kv : node->attrs) {
-          ImGui::TextDisabled("%s", kv.first.c_str());
-          ImGui::SetNextItemWidth(-1);
-          ImGui::PushID(kv.first.c_str());
-          char buf[4096]; snprintf(buf, sizeof buf, "%s", kv.second.c_str());
-          ImGui::InputText("##property", buf, sizeof buf); recordField("property:" + node->tag + ":" + kv.first);
-          if (ImGui::IsItemDeactivatedAfterEdit() && kv.second != buf) {
-            sign->node = node; sign->key = kv.first; sign->value = buf; sign->commit = true;
-          }
-          ImGui::PopID(); ImGui::Dummy(ImVec2(0, 3));
-        }
-        for (auto &child : node->children) {
-          const auto &tag = child->tag;
-          if (tag == "text_geom") continue;
-          if (top && (tag == "pos" || tag == "hpr" || tag == "nhpr" || tag == "scale")) continue;
-          properties(child.get(), false);
-        }
-        if (!top) ImGui::TreePop();
-      }
-      ImGui::PopID();
-    };
-    properties(it->node, true);
-  }
-
   ImGui::Dummy(ImVec2(0, 6));
   std::string parentCode;
   if (it->node) parentCode = it->node->attr("parent_code");
@@ -317,6 +277,46 @@ int inspectorPanel(dna::Item *it, int index, dna::Xform &x, const dna::Document 
     ImGui::PopID();
   }
   field("sx", "X", x.sx, 0.01f); field("sy", "Y", x.sy, 0.01f); field("sz", "Z", x.sz, 0.01f);
+  if (doc && it->node && sign) {
+    ImGui::Dummy(ImVec2(0, 6));
+    ImGui::SeparatorText("Properties");
+    ImGui::TextWrapped("Expand a section to edit its values. Font codes refer to the loaded storage files.");
+    std::function<void(const dna::XmlNode *, bool)> properties = [&](const dna::XmlNode *node, bool top) {
+      ImGui::PushID((int)node->start);
+      bool expanded = top || ImGui::TreeNode(node->tag.c_str());
+      if (expanded) {
+        if (node->tag == "title" || node->tag == "texture") {
+          std::string value = dna::nodeText(node, doc->text);
+          char buf[4096]; snprintf(buf, sizeof buf, "%s", value.c_str());
+          ImGui::SetNextItemWidth(-1); ImGui::InputText("##text-value", buf, sizeof buf);
+          if (ImGui::IsItemDeactivatedAfterEdit() && value != buf) {
+            sign->node = node; sign->key = "@text"; sign->value = buf; sign->commit = true;
+          }
+        }
+        for (auto &kv : node->attrs) {
+          ImGui::TextDisabled("%s", kv.first.c_str());
+          ImGui::SetNextItemWidth(-1);
+          ImGui::PushID(kv.first.c_str());
+          char buf[4096]; snprintf(buf, sizeof buf, "%s", kv.second.c_str());
+          ImGui::InputText("##property", buf, sizeof buf); recordField("property:" + node->tag + ":" + kv.first);
+          if (ImGui::IsItemDeactivatedAfterEdit() && kv.second != buf) {
+            sign->node = node; sign->key = kv.first; sign->value = buf; sign->commit = true;
+          }
+          ImGui::PopID(); ImGui::Dummy(ImVec2(0, 3));
+        }
+        for (auto &child : node->children) {
+          const auto &tag = child->tag;
+          if (tag == "text_geom") continue;
+          if (top && (tag == "pos" || tag == "hpr" || tag == "nhpr" || tag == "scale")) continue;
+          properties(child.get(), false);
+        }
+        if (!top) ImGui::TreePop();
+      }
+      ImGui::PopID();
+    };
+    properties(it->node, true);
+  }
+
   return r;
 }
 
