@@ -154,6 +154,18 @@ int main(int argc, char **argv) {
     float d = ed.v3->dist, y = ed.v3->yaw, p = ed.v3->pitch;
     if (sscanf(cam, "%f,%f,%f", &d, &y, &p) >= 1) { ed.v3->dist = d; ed.v3->yaw = y; ed.v3->pitch = p; ed.v3->apply(); }
   }
+  if (const char *ca = getenv("DNAED_CONTEXT_AREA")) ed.setContextArea(ca);   // e2e: pick a View > Playground context area
+  if (const char *pz = getenv("DNAED_PASTE")) {   // e2e: Ctrl+C the selection, Ctrl+V at copied centre + "dx,dy,dz[,zone]"
+    float dx = 0, dy = 0, dz = 0; char mode[16] = {0};
+    sscanf(pz, "%f,%f,%f,%15s", &dx, &dy, &dz, mode);
+    ed.copySelected();
+    for (int id : ed.selection) { NodePath n = ed.scene.itemNodes[id]; LPoint3 w = n.get_pos(ed.scene.world); printf("copy [%d] parent=%s world (%.2f,%.2f,%.2f)\n", id, n.get_parent().get_name().c_str(), w[0], w[1], w[2]); }
+    LPoint3 at = ed.clipboardCenter() + LVector3(dx, dy, dz);
+    int n = ed.pasteClipboard(std::string(mode) == "zone", &at);
+    for (int id : ed.selection) { auto &x = ed.doc.items[id].xf;
+      printf("pasted [%d] %s xf (%.3f,%.3f,%.3f) h%.1f p%.1f s%.3f\n", id, ed.doc.items[id].name.c_str(), x.x, x.y, x.z, x.h, x.p, x.sx); }
+    printf("paste %d\n", n);
+  }
   if (preOp >= 0) ed.gizmoOp = (render::GizmoOp)preOp;
   if (haveDpos && preSel >= 0 && preSel < (int)ed.doc.items.size()) {
     // Simulate a Move-gizmo nudge on the selected item, then optional save (e2e / smoke).

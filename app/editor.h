@@ -34,6 +34,16 @@ class Editor {
   bool snapActive() const;  // snap.on and Alt not held (Alt = temporary bypass)
   void beginEdit(); void endEdit(const char *label);
   void duplicateSelected(); void deleteSelected();
+  // Copy/paste anywhere (Ctrl+C / Ctrl+V; Ctrl+Shift+V = paste at zone level, detached from the parent model).
+  // The clipboard survives File > Open, so props can move between files in one session.
+  void copySelected();
+  int pasteClipboard(bool zoneLevel, const LPoint3 *at = nullptr);
+  LPoint3 clipboardCenter() const;
+  size_t clipboardSize() const { return clip_.size(); }
+  // Appearance Override playground context: the whole host area, never selectable, never saved.
+  void rebuildContext();
+  void setContextArea(const std::string &rel);
+  const std::vector<std::string> &contextAreas() const { return ctxAreas_; }
   bool openPreview(int catIndex);
   int placePreviewed();
   void setLight(render::LightMode m);
@@ -119,7 +129,7 @@ class Editor {
   float ovFxMistSpeed_ = 0.40f, ovFxMistHue_ = 0.28f, ovFxMistRadius_ = 8.0f;
   float ovFxLanternSize_ = 1.45f, ovFxLanternIntensity_ = 0.38f, ovFxFlashSpeed_ = 1.0f;
   // Jack-o'-lantern face-only candle glow (game: HalloweenFaceGlow)
-  float ovFxFaceGlow_ = 1.0f, ovFxFlickerAmount_ = 0.35f, ovFxFlickerSpeed_ = 1.0f;
+  float ovFxFaceGlow_ = 1.6f, ovFxFlickerAmount_ = 0.35f, ovFxFlickerSpeed_ = 1.0f;
   bool ovPreviewEffects_ = true;           // Preview effects ON by default (live only, no XML)
   bool ovAnimateBats_ = false;             // Bat flap/bob OFF by default (placement-friendly)
   NodePath fxPreviewRoot_;                 // labels + fog + halos (not saved)
@@ -139,4 +149,11 @@ class Editor {
   void pushXformFromNode(int id, bool fromGizmo = false);
   LPoint3 placementPoint();
   float snapv(float v) const;
+  struct ClipItem { std::string xml, kind, name, code, visgroup; dna::Xform xf, origXf; LMatrix4 world; };
+  std::vector<ClipItem> clip_;
+  bool ctxShow_ = true; std::string ctxRel_; std::vector<std::string> ctxAreas_, ctxHosts_;
+  render::Scene ctxScene_; dna::Document ctxDoc_; assets::Storage ctxStorage_; bool ctxBuilt_ = false;
+  void scanContextAreas();
+  void detachContext();
+  void attachContext();
 };

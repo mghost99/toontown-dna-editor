@@ -54,7 +54,14 @@ void Scene::clear() {
 namespace fs = std::filesystem;
 
 // Host playground DNA for Appearance Override files (parent_code world xform).
+static std::string g_hostOverride;   // View > Context area (empty = zone default)
+void setHostDnaOverride(const std::string &rel) { g_hostOverride = rel; }
+std::string hostDnaRelFor(const dna::Document &doc);
 static std::string hostDnaRel(const dna::Document &doc) {
+  if (!g_hostOverride.empty()) return g_hostOverride;
+  return hostDnaRelFor(doc);
+}
+std::string hostDnaRelFor(const dna::Document &doc) {
   std::string zone = doc.root ? doc.root->attr("zone") : "";
   auto base = fs::path(doc.rel).filename().string();
   for (auto &c : base) c = (char)tolower((unsigned char)c);

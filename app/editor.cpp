@@ -25,6 +25,7 @@
 #include <fstream>
 #include <vector>
 #include <regex>
+#include <set>
 
 namespace fs = std::filesystem;
 using core::ScopedTimer;
@@ -87,7 +88,9 @@ bool Editor::open(const std::string &f) {
     if (!hasModel) core::warn("code used by this file but defined in no storage file: " + u);
   }
   history.clear(); selection.clear(); boxes_.clear(); editing_ = false; dragging_ = dragArmed_ = false; overrideDirty_ = false; ovFxLoaded_ = false;
+  detachContext(); ctxRel_.clear(); render::setHostDnaOverride("");
   { ScopedTimer t("generate scene (models+textures)"); scene.build(doc, storage_); }
+  scanContextAreas(); rebuildContext();
   vgVisible_.clear(); for (auto &v : doc.visgroups) vgVisible_[v] = true;
   loadedCodes_ = storage_.codes();
   int nested = 0; for (auto &it : doc.items) nested += it.nested;
@@ -150,7 +153,9 @@ void Editor::passwordDialog() {
 }
 
 void Editor::rebuildScene() {
+  detachContext();
   scene.build(doc, storage_);
+  attachContext();
   for (int i = 0; i < (int)doc.items.size(); ++i) {
     if (doc.items[i].origId < 0) scene.buildAdded(doc, i, storage_);
     scene.syncItem(doc, i);
@@ -1142,11 +1147,12 @@ void Editor::updateEffectsPreview() {
     NodePath face = faceLayerFor(L.np, decal);
     if (!face.is_empty()) {
       if (decal) {
-        LColor on(1.f, 0.85f, 0.55f, std::min(1.f, 0.95f * g)), off(1.f, 0.7f, 0.4f, 0.04f * g);
+        const float k = 0.6f + 0.5f * g;   // matches HalloweenFaceGlow.onOffColors
+        LColor on(1.f * k, 0.80f * k, 0.38f * k, std::min(1.f, 0.95f * g)), off(1.f, 0.7f, 0.4f, 0.04f * g);
         LColor c = lerpC(off, on, f); c[3] *= flick;
         face.set_color_scale(c);
       } else {
-        LColor on(1.f + 0.55f * g, 1.f + 0.30f * g, 0.65f + 0.10f * g, 1.f), off(0.48f, 0.34f, 0.20f, 1.f);
+        LColor on(1.f + 0.90f * g, 1.f + 0.60f * g, 0.50f + 0.10f * g, 1.f), off(0.48f, 0.34f, 0.20f, 1.f);
         LColor c = lerpC(off, on, f);
         face.set_color_scale(c[0] * flick, c[1] * (0.94f * flick + 0.06f), c[2] * (0.85f * flick + 0.15f), 1.f);
       }
@@ -1158,8 +1164,9 @@ void Editor::updateEffectsPreview() {
     tn->set_text(std::to_string(L.idx + 1));
     tn->set_align(TextNode::A_center);
     tn->set_text_color(1, 0.95f, 0.4f, 1);
+    tn->set_shadow(0.07f, 0.07f); tn->set_shadow_color(0, 0, 0, 1);   // readable on the roof / sky
     NodePath lab = fxPreviewRoot_.attach_new_node(tn);
-    lab.set_scale(0.55f);
+    lab.set_scale(1.1f);
     lab.set_pos(L.np.get_pos(scene.world) + LVector3(0, 0, 1.8f));
     lab.set_effect(BillboardEffect::make_point_eye());
     lab.set_bin("fixed", 60);
@@ -1400,6 +1407,9 @@ void Editor::menuBar() {
     if (ImGui::MenuItem(("Undo " + history.undoLabel()).c_str(), "Ctrl+Z", false, history.canUndo())) history.undo(doc);
     if (ImGui::MenuItem(("Redo " + history.redoLabel()).c_str(), "Ctrl+Y", false, history.canRedo())) history.redo(doc);
     ImGui::Separator();
+    if (ImGui::MenuItem("Copy", "Ctrl+C", false, !selection.empty())) copySelected();
+    if (ImGui::MenuItem("Paste", "Ctrl+V", false, !clip_.empty())) pasteClipboard(false);
+    if (ImGui::MenuItem("Paste at zone level", "Ctrl+Shift+V", false, !clip_.empty())) pasteClipboard(true);
     if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, !selection.empty())) duplicateSelected();
     if (ImGui::MenuItem("Delete", "Del", false, !selection.empty())) deleteSelected();
     if (ImGui::MenuItem("Deselect", "Esc")) selection.clear();
@@ -1442,6 +1452,16 @@ void Editor::menuBar() {
       if (ImGui::MenuItem("Preview effects", nullptr, prev)) setPreviewEffects(!prev);
       bool bats = ovAnimateBats_;
       if (ImGui::MenuItem("Animate bats", nullptr, bats)) setAnimateBats(!bats);
+      if (ImGui::BeginMenu("Playground context")) {
+        if (ImGui::MenuItem("Show playground (view only, never saved)", nullptr, ctxShow_)) { ctxShow_ = !ctxShow_; rebuildContext(); }
+        ImGui::Separator();
+        std::string hosts; for (auto &h : ctxHosts_) hosts += (hosts.empty() ? "" : ", ") + h;
+        ImGui::TextDisabled("Areas that use %s:", hosts.empty() ? "this zone" : hosts.c_str());
+        std::string cur = ctxRel_.empty() ? render::hostDnaRelFor(doc) : ctxRel_;
+        for (auto &a : ctxAreas_) if (ImGui::MenuItem(a.c_str(), nullptr, a == cur)) setContextArea(a);
+        if (ctxAreas_.empty()) ImGui::TextDisabled("(none found)");
+        ImGui::EndMenu();
+      }
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Walk through map", "F5", walker.active(), !doc.path.empty())) toggleWalker();
@@ -1486,6 +1506,8 @@ void Editor::shortcuts() {
   else if (c && pr(ImGuiKey_S)) save();
   else if (c && pr(ImGuiKey_O)) showOpen_ = true;
   else if (c && pr(ImGuiKey_D)) duplicateSelected();
+  else if (c && pr(ImGuiKey_C)) copySelected();
+  else if (c && pr(ImGuiKey_V)) pasteClipboard(io.KeyShift);
   else if (!c) {
     if (pr(ImGuiKey_W)) gizmoOp = render::GizmoOp::Translate;
     if (pr(ImGuiKey_E)) {   // toggle: E again returns to the previous mode
@@ -1727,4 +1749,145 @@ void Editor::resDialog() {
   ImGui::EndDisabled(); ImGui::SameLine();
   if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
   ImGui::EndPopup();
+}
+
+// ---------------------------------------------------------------- copy / paste anywhere
+void Editor::copySelected() {
+  clip_.clear();
+  for (int i : selection) {
+    if (i < 0 || i >= (int)doc.items.size()) continue;
+    const auto &it = doc.items[i];
+    if (it.deleted) continue;
+    if (it.nested) { core::warn("copy: '" + it.name + "' is nested inside another object; copy its parent instead"); continue; }
+    ClipItem c; c.xml = doc.itemXml(it); c.kind = it.kind; c.name = it.name; c.code = it.code; c.visgroup = it.visgroup;
+    c.xf = it.xf; c.origXf = it.origXf;
+    NodePath n = i < (int)scene.itemNodes.size() ? scene.itemNodes[i] : NodePath();
+    c.world = n.is_empty() ? LMatrix4::ident_mat() : n.get_mat(scene.world);
+    clip_.push_back(std::move(c));
+  }
+  core::info(fmt("copied %d object(s)", (int)clip_.size()));
+}
+
+LPoint3 Editor::clipboardCenter() const {
+  LPoint3 c(0, 0, 0); if (clip_.empty()) return c;
+  for (auto &k : clip_) c += k.world.get_row3(3);
+  return c / (PN_stdfloat)clip_.size();
+}
+
+static std::string attrOfFirstTag(const std::string &xml, const std::string &a) {
+  size_t end = xml.find('>'); std::string head = xml.substr(0, end);
+  std::smatch m; std::regex re("\\s" + a + "=\"([^\"]*)\"");
+  return std::regex_search(head, m, re) ? m[1].str() : std::string();
+}
+static std::string dropAttrsOfFirstTag(std::string xml, std::initializer_list<const char *> names) {
+  size_t end = xml.find('>'); std::string head = xml.substr(0, end), tail = end == std::string::npos ? "" : xml.substr(end);
+  for (auto n : names) head = std::regex_replace(head, std::regex(std::string("\\s") + n + "=\"[^\"]*\""), "");
+  return head + tail;
+}
+
+int Editor::pasteClipboard(bool zoneLevel, const LPoint3 *at) {
+  if (clip_.empty()) { core::warn("paste: clipboard is empty (Ctrl+C a prop first)"); return 0; }
+  // Target: explicit point, else under the mouse in the 3D view, else the view centre.
+  LPoint3 target;
+  if (at) target = *at;
+  else {
+    ImVec2 mp = ImGui::GetIO().MousePos; render::Rect r = v3->rect();
+    bool in = mp.x >= r.x && mp.y >= r.y && mp.x < r.x + r.w && mp.y < r.y + r.h;
+    render::PickHit h; if (in) h = render::pick(*v3, mp.x, mp.y, scene.geom);
+    LPoint3 o, p; LVector3 d;
+    if (in && h.hit) target = h.point;
+    else if (in && v3->ray(mp.x, mp.y, o, d) && render::rayPlaneZ(o, d, 0, p)) target = p;
+    else target = placementPoint();
+    if (snap.on) { float s = std::max(0.05f, snap.move); target[0] = std::round(target[0] / s) * s; target[1] = std::round(target[1] / s) * s; }
+  }
+  LVector3 off = target - clipboardCenter();
+  std::vector<int> added;
+  for (auto &c : clip_) {
+    dna::Item it; it.kind = c.kind; it.name = c.name; it.code = c.code; it.origId = -1;
+    it.visgroup = std::find(doc.visgroups.begin(), doc.visgroups.end(), c.visgroup) != doc.visgroups.end() ? c.visgroup
+                : (!selection.empty() ? doc.items[selection[0]].visgroup : (doc.visgroups.empty() ? "" : doc.visgroups[0]));
+    it.templateXml = c.xml; it.origXf = c.origXf; it.xf = c.xf;
+    std::string pc = attrOfFirstTag(c.xml, "parent_code");
+    NodePath frame = pc.empty() ? NodePath() : scene.attachParent(pc);
+    if (!pc.empty() && (zoneLevel || frame.is_empty())) {
+      // Zone-level: detach from the parent model; the game parents these under the zone geom.
+      it.templateXml = dropAttrsOfFirstTag(c.xml, {"parent_code", "parent_node"});
+      frame = NodePath();
+    }
+    if (frame.is_empty()) frame = scene.visgroupNodes.count(it.visgroup) ? scene.visgroupNodes[it.visgroup]
+                                : (scene.visgroupNodes.empty() ? scene.geom : scene.visgroupNodes.begin()->second);
+    LMatrix4 m = c.world; m.set_row(3, m.get_row3(3) + off);
+    NodePath tmp = scene.world.attach_new_node("paste_tmp"); tmp.set_mat(m);
+    LPoint3 p = tmp.get_pos(frame); LVecBase3 hpr = tmp.get_hpr(frame), s = tmp.get_scale(frame);
+    tmp.remove_node();
+    it.xf.x = p[0]; it.xf.y = p[1]; it.xf.z = p[2]; it.xf.h = hpr[0]; it.xf.p = hpr[1]; it.xf.r = hpr[2];
+    it.xf.sx = s[0]; it.xf.sy = s[1]; it.xf.sz = s[2];
+    doc.items.push_back(it); int id = (int)doc.items.size() - 1;
+    scene.buildAdded(doc, id, storage_); added.push_back(id);
+  }
+  if (added.empty()) return 0;
+  auto cmd = std::make_unique<commands::DeleteCmd>(); cmd->ids = added; cmd->add = true;
+  history.pushApplied(std::move(cmd));
+  selection = added;
+  core::info(fmt("pasted %d object(s)%s at (%.1f, %.1f, %.1f)", (int)added.size(), zoneLevel ? " at zone level" : "",
+                 target[0], target[1], target[2]));
+  return (int)added.size();
+}
+
+// ---------------------------------------------------------------- playground context (Appearance Override)
+void Editor::scanContextAreas() {
+  ctxAreas_.clear(); ctxHosts_.clear();
+  if (!isAppearanceOverride() || !doc.root) return;
+  std::set<std::string> hosts;
+  dna::walk(doc.root.get(), [&](const dna::XmlNode *n) { auto pc = n->attr("parent_code"); if (!pc.empty()) hosts.insert(pc); });
+  ctxHosts_.assign(hosts.begin(), hosts.end());
+  std::string def = render::hostDnaRelFor(doc);
+  for (auto &rel : dna::sceneFiles(resRoot)) {
+    if (rel.find("/overrides/") != std::string::npos) continue;
+    bool use = rel == def;
+    if (!use && !hosts.empty()) {
+      std::ifstream f(fs::path(resRoot) / rel); std::string t((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+      for (auto &h : hosts) if (t.find("code=\"" + h + "\"") != std::string::npos) { use = true; break; }
+    }
+    if (use) ctxAreas_.push_back(rel);
+  }
+  std::sort(ctxAreas_.begin(), ctxAreas_.end());
+}
+
+void Editor::detachContext() { if (ctxBuilt_ && !ctxScene_.geom.is_empty()) ctxScene_.geom.detach_node(); }
+void Editor::attachContext() {
+  if (!ctxBuilt_ || ctxScene_.geom.is_empty() || !ctxShow_) return;
+  ctxScene_.geom.reparent_to(scene.geom);
+}
+
+void Editor::rebuildContext() {
+  detachContext();
+  if (ctxBuilt_) { ctxScene_.clear(); ctxBuilt_ = false; }
+  if (!ctxShow_ || !isAppearanceOverride() || !doc.root) return;
+  std::string rel = ctxRel_.empty() ? render::hostDnaRelFor(doc) : ctxRel_;
+  if (rel.empty()) return;
+  ScopedTimer t("playground context");
+  dna::Document d; std::string err;
+  if (!d.load((fs::path(resRoot) / rel).string(), resRoot, &err)) { core::warn("context: cannot load " + rel + ": " + err); return; }
+  ctxDoc_ = std::move(d);
+  auto st = dna::storagesForFile(resRoot, ctxDoc_.rel, ctxDoc_.text, nullptr);
+  ctxStorage_.clear(); ctxStorage_.addFiles(st);
+  ctxScene_.build(ctxDoc_, ctxStorage_);
+  // The parent model already stands in the scene (solid/ghost attach parent): hide its context copy.
+  int hidden = 0;
+  for (size_t i = 0; i < ctxDoc_.items.size() && i < ctxScene_.itemNodes.size(); i++)
+    if (std::find(ctxHosts_.begin(), ctxHosts_.end(), ctxDoc_.items[i].code) != ctxHosts_.end() && !ctxScene_.itemNodes[i].is_empty()) {
+      ctxScene_.itemNodes[i].stash(); hidden++; }
+  // Never selectable: drop every editable-id tag so picks fall through to "nothing".
+  auto tagged = ctxScene_.geom.find_all_matches("**/=eid");
+  for (int k = 0; k < tagged.get_num_paths(); k++) tagged.get_path(k).clear_tag("eid");
+  ctxScene_.geom.set_name("playground_context (not saved)");
+  ctxBuilt_ = true;
+  attachContext();
+  core::info(fmt("context: %s (%d objects, parent copy hidden: %d) - view only, never saved", rel.c_str(), (int)ctxDoc_.items.size(), hidden));
+}
+
+void Editor::setContextArea(const std::string &rel) {
+  ctxRel_ = rel; render::setHostDnaOverride(rel);
+  detachContext(); rebuildScene(); rebuildContext();
 }

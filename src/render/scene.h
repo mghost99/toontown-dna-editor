@@ -29,6 +29,7 @@ class Scene {
   // ATTACH-TO-MODEL parent ghost opacity (1 = solid). Ghost stays non-selectable.
   void setParentGhostAlpha(float a);
   float parentGhostAlpha() const { return parentGhostAlpha_; }
+  NodePath attachParent(const std::string &code) const { auto it = attachParents_.find(code); return it == attachParents_.end() ? NodePath() : it->second; }
   LPoint3 boundsMin, boundsMax;
   void computeBounds();
   int stats_nodes = 0;
@@ -48,5 +49,8 @@ class Scene {
   void prepareAttachParents(const dna::Document &doc, assets::Storage &st);
 };
 
-NodePath makeMarker(const LColor &c, float size);   // small octahedron, unlit
+NodePath makeMarker(const LColor &c, float size);
+// Appearance Override host playground: zone default, or the area picked in View > Context.
+std::string hostDnaRelFor(const dna::Document &doc);
+void setHostDnaOverride(const std::string &rel);   // small octahedron, unlit
 }  // namespace render
