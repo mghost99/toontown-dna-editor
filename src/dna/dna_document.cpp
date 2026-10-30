@@ -401,12 +401,19 @@ static std::map<std::string, std::string> &dnaIndex(const std::string &res) {   
     for (auto &ph : fs::directory_iterator(res)) {
       if (!ph.is_directory() || ph.path().filename().string().rfind("phase_", 0) != 0) continue;
       fs::path d = ph.path() / "dna"; if (!fs::is_directory(d)) continue;
-      for (auto &f : fs::directory_iterator(d))
-        if (f.path().extension() == ".xml" || f.path().extension() == ".dna" || f.path().extension() == ".pdna") {
-          auto b = f.path().filename().string();
-          auto r = fs::relative(f.path(), res).generic_string();
-          if (!m.count(b) || r < m[b]) m[b] = r;
-        }
+      // Opt-in Appearance Override DNA lives under dna/overrides/ when present.
+      // Normal dna/*.xml indexing is unchanged; empty overrides/ dirs are ignored.
+      auto indexDir = [&](const fs::path &dir) {
+        if (!fs::is_directory(dir)) return;
+        for (auto &f : fs::directory_iterator(dir))
+          if (f.path().extension() == ".xml" || f.path().extension() == ".dna" || f.path().extension() == ".pdna") {
+            auto b = f.path().filename().string();
+            auto r = fs::relative(f.path(), res).generic_string();
+            if (!m.count(b) || r < m[b]) m[b] = r;
+          }
+      };
+      indexDir(d);
+      indexDir(d / "overrides");
     }
   }
   return m;
