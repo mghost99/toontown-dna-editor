@@ -343,6 +343,12 @@ void helpPanel() {
   section("Files and history", {{"Ctrl + S / Ctrl + O", "Save or open a file. Saving creates a backup."},
     {"Ctrl + Z", "Undo, including sign text and property changes."}, {"Ctrl + Y", "Redo. Ctrl + Shift + Z also works."},
     {"F1 / F2", "Input diagnostics or this shortcuts panel."}, {"Esc", "Clear the selection."}});
+  section("Appearance Override (opt-in)", {
+    {"File > New Appearance Override", "Creates phase_*/dna/overrides/*.xml with appearance_override=1. Normal DNA is untouched."},
+    {"Open overrides/*.xml", "Listed in Open when the folder exists. The Appearance Override panel appears only for these files."},
+    {"Palette > Place", "Add a prop into the override (same as normal DNA)."},
+    {"Hide / Replace / Recolor", "Select a prop or type its DNA code in the panel, then click the button. Save with Ctrl+S."},
+    {"gate / holidays", "always, holiday, or date. Holiday names match the game (e.g. HALLOWEEN_PROPS)."}});
 }
 
 

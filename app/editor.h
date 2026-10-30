@@ -85,9 +85,21 @@ class Editor {
   void dockLayout(unsigned id);
   void viewport3D(); void viewport2D(); void previewWindow(); void menuBar(); void shortcuts(); void statusBar();
   void visgroupsPanel(); void statsPanel(); void openDialog(); void resDialog(); void passwordDialog();
+  // Appearance Override DNA (opt-in): panel only when the open file has appearance_override="1".
+  void overridePanel();
+  bool isAppearanceOverride() const;
+  bool injectOverrideOp(const std::string &tag, const std::string &code,
+                        const std::string &extraAttrs = "");
+  bool setOverrideGate(const std::string &gate, const std::string &holidays);
+  bool newAppearanceOverride();
   // encrypted .pdna: modal password prompt (password kept in memory only, never logged/saved)
   bool showPw_ = false; std::string pwFile_, pwMsg_; char pwBuf_[256] = {0};
   bool showRes_ = false; char resBuf_[1024] = {0}; std::string resMsg_;
+  bool overrideDirty_ = false;
+  char ovGate_[32] = "holiday";
+  char ovHolidays_[256] = "HALLOWEEN_PROPS,SPOOKY_PROPS";
+  char ovCode_[128] = "";
+  char ovRecolor_[32] = "1 1 1 1";
   void drawSelection(render::View &v, bool topDown);
   bool handleDrag(render::View &v, bool topDown, bool hovered);
   void pushXformFromNode(int id, bool fromGizmo = false);

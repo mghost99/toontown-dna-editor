@@ -12,6 +12,9 @@
 #include "config_putil.h"
 #include <cmath>
 #include <filesystem>
+#include <fstream>
+#include <vector>
+#include <regex>
 
 namespace fs = std::filesystem;
 using core::ScopedTimer;
@@ -64,7 +67,7 @@ bool Editor::open(const std::string &f) {
   std::string sl; for (auto &s : st) sl += (sl.empty() ? "" : ", ") + fs::path(s).filename().string();
   core::info("storage for " + doc.rel + ": " + sl);
   for (auto &u : undef) core::warn("code used by this file but defined in no storage file: " + u);
-  history.clear(); selection.clear(); boxes_.clear(); editing_ = false; dragging_ = dragArmed_ = false;
+  history.clear(); selection.clear(); boxes_.clear(); editing_ = false; dragging_ = dragArmed_ = false; overrideDirty_ = false;
   { ScopedTimer t("generate scene (models+textures)"); scene.build(doc, storage_); }
   vgVisible_.clear(); for (auto &v : doc.visgroups) vgVisible_[v] = true;
   loadedCodes_ = storage_.codes();
@@ -85,6 +88,7 @@ bool Editor::save(const std::string &outDir) {
   if (!outDir.empty()) fs::create_directories(outDir);
   std::string err; dna::SaveStats s;
   if (!doc.save(&err, &s, out)) { core::error("save failed: " + err); return false; }
+  overrideDirty_ = false;
   core::info(fmt("saved %s (%d moved, %d deleted, %d added; backup %s.bak)", (out.empty() ? doc.path : out).c_str(),
                  s.moved, s.deleted, s.added, fs::path(out.empty() ? doc.path : out).filename().string().c_str()));
   if (out.empty()) {   // re-read so ids/spans match the new text; models are cached so this is fast
@@ -682,6 +686,153 @@ void Editor::statsPanel() {
   ImGui::End();
 }
 
+
+bool Editor::isAppearanceOverride() const {
+  return doc.text.find("appearance_override") != std::string::npos;
+}
+
+bool Editor::injectOverrideOp(const std::string &tag, const std::string &code,
+                              const std::string &extraAttrs) {
+  if (code.empty() || doc.text.empty()) return false;
+  size_t pos = doc.text.rfind("</group>");
+  if (pos == std::string::npos) {
+    // No group yet: insert before </scene>
+    pos = doc.text.rfind("</scene>");
+    if (pos == std::string::npos) return false;
+    std::string block = "\t<group name=\"override\" gate=\"" + std::string(ovGate_) + "\"";
+    if (std::string(ovGate_) == "holiday")
+      block += " holidays=\"" + std::string(ovHolidays_) + "\"";
+    block += ">\n\t\t<" + tag + " code=\"" + code + "\"";
+    if (!extraAttrs.empty()) block += " " + extraAttrs;
+    block += "/>\n\t</group>\n";
+    doc.text.insert(pos, block);
+  } else {
+    std::string line = "\t\t<" + tag + " code=\"" + code + "\"";
+    if (!extraAttrs.empty()) line += " " + extraAttrs;
+    line += "/>\n";
+    doc.text.insert(pos, line);
+  }
+  doc.textDirty = true;
+  overrideDirty_ = true;
+  core::info("AODNA: queued <" + tag + " code=\"" + code + "\"> (save to write)");
+  return true;
+}
+
+bool Editor::setOverrideGate(const std::string &gate, const std::string &holidays) {
+  if (doc.text.empty()) return false;
+  std::regex re(R"(<group\b[^>]*>)");
+  std::smatch m;
+  if (!std::regex_search(doc.text, m, re)) return false;
+  std::string tag = m.str(0);
+  auto setAttr = [](std::string t, const std::string &k, const std::string &v) {
+    std::regex re2("(\\b" + k + "\\s*=\\s*)(\"[^\"]*\"|'[^']*')");
+    std::smatch mm;
+    if (std::regex_search(t, mm, re2)) {
+      return t.substr(0, mm.position(0)) + mm.str(1) + "\"" + v + "\"" +
+             t.substr(mm.position(0) + mm.length(0));
+    }
+    size_t gt = t.rfind('>');
+    if (gt == std::string::npos) return t;
+    return t.substr(0, gt) + " " + k + "=\"" + v + "\"" + t.substr(gt);
+  };
+  tag = setAttr(tag, "gate", gate);
+  if (gate == "holiday") tag = setAttr(tag, "holidays", holidays);
+  doc.text.replace((size_t)m.position(0), (size_t)m.length(0), tag);
+  doc.textDirty = true;
+  overrideDirty_ = true;
+  core::info("AODNA: gate=" + gate + " holidays=" + holidays);
+  return true;
+}
+
+bool Editor::newAppearanceOverride() {
+  // Opt-in skeleton under phase_4/dna/overrides/ — does not touch existing DNA.
+  fs::path dir = fs::path(resRoot) / "phase_4" / "dna" / "overrides";
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  if (ec) { core::error("cannot create overrides dir: " + ec.message()); return false; }
+  std::string name = "new_override.xml";
+  fs::path out = dir / name;
+  int n = 1;
+  while (fs::exists(out)) {
+    name = "new_override_" + std::to_string(n++) + ".xml";
+    out = dir / name;
+  }
+  const char *skel =
+      "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+      "<!-- Appearance Override DNA (opt-in). appearance_override=1.\n"
+      "     Place add-props from the Palette. Use the Appearance Override panel\n"
+      "     for holiday gate, hide, replace, and recolor. Normal DNA is unchanged. -->\n"
+      "<scene zone=\"2000\" appearance_override=\"1\">\n"
+      "\t<group name=\"override\" gate=\"holiday\" holidays=\"HALLOWEEN_PROPS,SPOOKY_PROPS\">\n"
+      "\t</group>\n"
+      "</scene>\n";
+  {
+    std::ofstream f(out);
+    if (!f) { core::error("cannot write " + out.string()); return false; }
+    f << skel;
+  }
+  core::info("created " + out.string());
+  return open(out.string());
+}
+
+void Editor::overridePanel() {
+  if (!isAppearanceOverride()) return;  // opt-in: never show on normal DNA
+  ImGui::Begin("Appearance Override");
+  ImGui::TextWrapped(
+      "Opt-in holiday/appearance overlay. Normal DNA files never see this panel.\n"
+      "Add props: place from the Palette (same as normal DNA).\n"
+      "Hide / Replace / Recolor: select a prop or type its DNA code.");
+  ImGui::Separator();
+  ImGui::SetNextItemWidth(120);
+  ImGui::InputText("gate", ovGate_, sizeof ovGate_);
+  ImGui::SetNextItemWidth(280);
+  ImGui::InputText("holidays", ovHolidays_, sizeof ovHolidays_);
+  if (ImGui::Button("Apply gate")) setOverrideGate(ovGate_, ovHolidays_);
+  ImGui::Separator();
+  ImGui::SetNextItemWidth(220);
+  ImGui::InputText("code", ovCode_, sizeof ovCode_);
+if (ImGui::Button("Use selected code") && !selection.empty()) {
+    int i = selection[0];
+    if (i >= 0 && i < (int)doc.items.size() && !doc.items[i].code.empty())
+      snprintf(ovCode_, sizeof ovCode_, "%s", doc.items[i].code.c_str());
+  }
+  auto codes = [&]() {
+    std::vector<std::string> out;
+    if (ovCode_[0]) out.push_back(ovCode_);
+    else for (int i : selection)
+      if (i >= 0 && i < (int)doc.items.size() && !doc.items[i].code.empty())
+        out.push_back(doc.items[i].code);
+    return out;
+  };
+  auto list = codes();
+  bool has = !list.empty();
+  if (ImGui::Button("Hide", ImVec2(90, 0)) && has) {
+    for (auto &c : list) injectOverrideOp("hide", c);
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Replace", ImVec2(90, 0)) && has) {
+    for (auto &c : list) injectOverrideOp("replace", c);
+  }
+  ImGui::SameLine();
+  ImGui::SetNextItemWidth(110);
+  ImGui::InputText("##recolor", ovRecolor_, sizeof ovRecolor_);
+  ImGui::SameLine();
+  if (ImGui::Button("Recolor", ImVec2(90, 0)) && has) {
+    std::string extra = "find=\"**/=DNACode=" + list[0] + "\" color_scale=\"" +
+                        std::string(ovRecolor_) + "\"";
+    // recolor uses find= not only code= — still stamp code for readability
+    for (auto &c : list) {
+      std::string ex = "find=\"**/=DNACode=" + c + "\" color_scale=\"" +
+                       std::string(ovRecolor_) + "\"";
+      injectOverrideOp("recolor", c, ex);
+    }
+  }
+  if (overrideDirty_ || doc.textDirty)
+    ImGui::TextColored(ImVec4(1, 0.75f, 0.35f, 1), "Override ops pending — Ctrl+S to save");
+  ImGui::TextDisabled("Format matches the game AODNA loader (hide/replace/recolor/prop).");
+  ImGui::End();
+}
+
 void Editor::openDialog() {
   if (showOpen_) { ImGui::OpenPopup("Open DNA file"); showOpen_ = false; }
   ImGui::SetNextWindowSize(ImVec2(560, 520), ImGuiCond_Appearing);
@@ -712,6 +863,7 @@ void Editor::menuBar() {
       std::string p = platform::pickFile("Open DNA file", resRoot, false, platform::kDnaFilters);
       if (!p.empty()) open(p);
     }
+    if (ImGui::MenuItem("New Appearance Override...")) newAppearanceOverride();
     if (ImGui::MenuItem("Save", "Ctrl+S", false, !doc.path.empty())) save();
     if (ImGui::MenuItem("Save As (.xml .dna .pdna)...", nullptr, false, !doc.path.empty())) {
       std::string p = platform::pickFile("Save DNA file as (.xml / .dna / .pdna)", doc.path, true, platform::kDnaFilters);
@@ -860,7 +1012,8 @@ void Editor::statusBar() {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 3));
   ImGui::Begin("##status", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav);
   int live = 0; for (auto &it : doc.items) live += !it.deleted;
-  ImGui::TextColored(doc.dirty() ? ImVec4(1, 0.75f, 0.35f, 1) : ImVec4(0.55f, 0.85f, 0.6f, 1), doc.dirty() ? "\xE2\x97\x8F unsaved" : "\xE2\x97\x8F saved");
+  bool dirty = doc.dirty() || overrideDirty_;
+  ImGui::TextColored(dirty ? ImVec4(1, 0.75f, 0.35f, 1) : ImVec4(0.55f, 0.85f, 0.6f, 1), dirty ? "\xE2\x97\x8F unsaved" : "\xE2\x97\x8F saved");
   ImGui::SameLine(); ImGui::TextDisabled("%s  |  %d objects  |  %d selected  |  undo %d  |  %.1f ms/frame",
                                          doc.rel.empty() ? "(no file)" : doc.rel.c_str(), live, (int)selection.size(), (int)history.size(), lastFrameMs);
   if (showInputDebug_) {
@@ -989,6 +1142,7 @@ void Editor::frame() {
   visgroupsPanel();
   if (showLog_) { ImGui::Begin("Log", &showLog_); if (showLog_) ui::logPanel(&logAuto_); ImGui::End(); }
   statsPanel();
+  overridePanel();
   if (showHelp_) {
     ImGui::SetNextWindowSize(ImVec2(610, std::min(760.f, vp->WorkSize.y - 60)), ImGuiCond_FirstUseEver);
     ImGui::Begin("Shortcuts", &showHelp_); ui::helpPanel(); ImGui::End();
