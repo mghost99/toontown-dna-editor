@@ -432,6 +432,19 @@ std::vector<std::string> storagesForFile(const std::string &res, const std::stri
   auto &idx = dnaIndex(res);
   std::string b = fs::path(rel).filename().string(), code;
   for (auto &[k, v] : kHoods) if (b.rfind(k, 0) == 0) { code = v; break; }
+  // Appearance Override files use short hood prefixes (ttc_sz_*.xml) or scene zone=.
+  if (code.empty()) {
+    std::string bl = b; for (auto &c : bl) c = (char)::tolower((unsigned char)c);
+    if (bl.rfind("ttc", 0) == 0) code = "TT";
+    else if (bl.rfind("dd", 0) == 0) code = "DD";
+    else if (bl.rfind("dg", 0) == 0) code = "DG";
+    else if (bl.rfind("mm", 0) == 0) code = "MM";
+    else if (bl.rfind("br", 0) == 0 || bl.rfind("tb", 0) == 0) code = "BR";
+    else if (bl.rfind("dl", 0) == 0) code = "DL";
+    else if (bl.rfind("gs", 0) == 0) code = "GS";
+    else if (text.find("zone=\"2000\"") != std::string::npos || text.find("zone='2000'") != std::string::npos) code = "TT";
+  }
+  // Also pull storages for parent_code= / model-less codes used by ATTACH-TO-MODEL overrides.
   bool digits = std::any_of(b.begin(), b.end(), ::isdigit);
   bool sz = b.find("_sz") != std::string::npos || !digits;
   std::vector<std::string> names = {"storage.xml"}; if (!sz) names.push_back("storage_town.xml");
@@ -444,7 +457,12 @@ std::vector<std::string> storagesForFile(const std::string &res, const std::stri
   }
   std::set<std::string> have; for (auto &p : pref) { auto &c = storageCodes(res, p); have.insert(c.begin(), c.end()); }
   std::set<std::string> used;
-  { auto x = parseText(text); walk(x.get(), [&](const XmlNode *n) { auto it = n->attrs.find("code"); if (it != n->attrs.end() && !it->second.empty() && !have.count(it->second)) used.insert(it->second); }); }
+  { auto x = parseText(text); walk(x.get(), [&](const XmlNode *n) {
+      for (const char *k : {"code", "parent_code"}) {
+        auto it = n->attrs.find(k);
+        if (it != n->attrs.end() && !it->second.empty() && !have.count(it->second)) used.insert(it->second);
+      }
+    }); }
   std::vector<std::string> extra;
   for (auto &[bn, r] : idx) {
     if (bn.rfind("storage", 0) != 0 || used.empty()) continue;

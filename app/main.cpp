@@ -77,6 +77,7 @@ int main(int argc, char **argv) {
   installCodecs();
   if (const char *pw = getenv("DNAED_PDNA_PASSWORD")) if (*pw) dna::setSessionPassword(pw);
   std::string res, file, selftest, snapPath; platform::Options o; int preSel = -1; int preOp = -1;
+  bool doSave = false; float dpos[3] = {0, 0, 0}; bool haveDpos = false;
   std::string convIn, convOut; bool encryptOut = false;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -89,6 +90,9 @@ int main(int argc, char **argv) {
     else if (a == "--no-vsync") o.vsync = false;
     else if (a == "--select" && i + 1 < argc) preSel = atoi(argv[++i]);
     else if (a == "--gizmo" && i + 1 < argc) preOp = atoi(argv[++i]);
+    else if (a == "--delta-pos" && i + 1 < argc) {
+      haveDpos = sscanf(argv[++i], "%f,%f,%f", &dpos[0], &dpos[1], &dpos[2]) >= 1;
+    } else if (a == "--save") doSave = true;
     else if (a == "--snap-and-exit" && i + 1 < argc) snapPath = argv[++i];
     else if (a == "--size" && i + 1 < argc) sscanf(argv[++i], "%dx%d", &o.width, &o.height);
     else if (a == "-h" || a == "--help") {
@@ -133,6 +137,20 @@ int main(int argc, char **argv) {
 
   if (preSel >= 0 && preSel < (int)ed.doc.items.size()) { ed.selection = {preSel}; if (getenv("DNAED_FRAME_SEL")) ed.frameSelection(); }
   if (preOp >= 0) ed.gizmoOp = (render::GizmoOp)preOp;
+  if (haveDpos && preSel >= 0 && preSel < (int)ed.doc.items.size()) {
+    // Simulate a Move-gizmo nudge on the selected item, then optional save (e2e / smoke).
+    auto &it = ed.doc.items[preSel];
+    printf("delta-pos on [%d] %s: (%.3f,%.3f,%.3f) -> ", preSel, it.name.c_str(), it.xf.x, it.xf.y, it.xf.z);
+    it.xf.x += dpos[0]; it.xf.y += dpos[1]; it.xf.z += dpos[2];
+    ed.doc.textDirty = true;
+    ed.scene.syncItem(ed.doc, preSel);
+    printf("(%.3f,%.3f,%.3f)\n", it.xf.x, it.xf.y, it.xf.z);
+  }
+  if (doSave) {
+    bool ok = ed.save("");
+    printf("save %s\n", ok ? "ok" : "FAILED");
+    if (!ok) { app.close(); return 1; }
+  }
   if (!snapPath.empty()) {   // real-window smoke test: render a few frames, screenshot, exit
     for (int i = 0; i < 8; i++) app.step([&] { ed.frame(); });
     bool ok = app.screenshot(snapPath);

@@ -18,6 +18,9 @@ NodePath ModelCache::load(const std::string &p) {
   core::ScopedTimer t("load model " + p, false);
   LoaderOptions opts(LoaderOptions::LF_search | LoaderOptions::LF_report_errors | LoaderOptions::LF_no_disk_cache);
   PT(PandaNode) n = Loader::get_global_ptr()->load_sync(Filename(p), opts);
+  // Game DNA often omits the extension; try .bam like the client model-path search.
+  if (n == nullptr && p.find('.') == std::string::npos)
+    n = Loader::get_global_ptr()->load_sync(Filename(p + ".bam"), opts);
   NodePath np;
   if (n == nullptr) core::warn("model not found or unreadable, skipped: " + p);
   else np = NodePath(n);

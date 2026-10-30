@@ -12,7 +12,15 @@
 #include "textNode.h"
 #include "fontPool.h"
 #include "bamFile.h"
+#include "cardMaker.h"
+#include "transparencyAttrib.h"
+#include "billboardEffect.h"
+#include "textureAttrib.h"
+#include <filesystem>
 #include <sstream>
+#include <fstream>
+#include <cstring>
+#include <cctype>
 #include <cmath>
 #include <algorithm>
 #include <cstdint>
@@ -38,7 +46,117 @@ void Scene::clear() {
   assets::stopAnimations(animations);
   geom.remove_node(); markers.remove_node();
   geom = world.attach_new_node("dna"); markers = world.attach_new_node("markers");
-  itemNodes.clear(); visgroupNodes.clear(); unknownTags_.clear(); stats_nodes = 0;
+  itemNodes.clear(); visgroupNodes.clear(); unknownTags_.clear(); attachParents_.clear(); stats_nodes = 0;
+}
+
+
+namespace fs = std::filesystem;
+
+// Host playground DNA for Appearance Override files (parent_code world xform).
+static std::string hostDnaRel(const dna::Document &doc) {
+  std::string zone = doc.root ? doc.root->attr("zone") : "";
+  auto base = fs::path(doc.rel).filename().string();
+  for (auto &c : base) c = (char)tolower((unsigned char)c);
+  if (zone == "2000" || zone == "ToontownCentral" || base.rfind("ttc", 0) == 0)
+    return "phase_4/dna/toontown_central_sz.xml";
+  if (zone == "1000" || base.rfind("dd", 0) == 0) return "phase_5/dna/donalds_dock_sz.xml";
+  if (zone == "3000" || base.rfind("dg", 0) == 0) return "phase_5/dna/daisys_garden_sz.xml";
+  if (zone == "4000" || base.rfind("mm", 0) == 0) return "phase_6/dna/minnies_melodyland_sz.xml";
+  if (zone == "5000" || base.rfind("br", 0) == 0 || base.rfind("tb", 0) == 0)
+    return "phase_6/dna/the_burrrgh_sz.xml";
+  if (zone == "6000" || base.rfind("dl", 0) == 0) return "phase_8/dna/donalds_dreamland_sz.xml";
+  return "";
+}
+
+static bool lookupHostPropXform(const dna::Document &doc, const std::string &code,
+                                LPoint3 &pos, LVecBase3 &hpr) {
+  pos = LPoint3(0, 0, 0); hpr = LVecBase3(0, 0, 0);
+  std::string rel = hostDnaRel(doc);
+  if (rel.empty()) return false;
+  std::string path = assets::ModelCache::get().resRoot() + "/" + rel;
+  std::string err, text;
+  // Lightweight: read file and scan for code= then nearby pos/nhpr (avoid full Document load).
+  std::ifstream in(path);
+  if (!in) return false;
+  std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  std::string needle = "code=\"" + code + "\"";
+  size_t p = all.find(needle);
+  if (p == std::string::npos) return false;
+  // Search forward within this prop element for <pos and <nhpr/<hpr
+  size_t end = all.find("</prop>", p);
+  if (end == std::string::npos) end = std::min(all.size(), p + 800);
+  auto grab = [&](const char *tag, const char *ax, float &out) {
+    size_t a = all.find(std::string("<") + tag, p);
+    if (a == std::string::npos || a > end) return;
+    size_t b = all.find(std::string(ax) + "=\"", a);
+    if (b == std::string::npos || b > end) return;
+    b += strlen(ax) + 2;
+    out = (float)atof(all.c_str() + b);
+  };
+  float x = 0, y = 0, z = 0, h = 0, pp = 0, r = 0;
+  grab("pos", "x", x); grab("pos", "y", y); grab("pos", "z", z);
+  if (all.find("<nhpr", p) < end) { grab("nhpr", "h", h); grab("nhpr", "p", pp); grab("nhpr", "r", r); }
+  else { grab("hpr", "h", h); grab("hpr", "p", pp); grab("hpr", "r", r); }
+  pos = LPoint3(x, y, z); hpr = LVecBase3(h, pp, r);
+  return true;
+}
+
+static NodePath makeTexturedCard(const std::string &texPath, const std::string &name, bool billboard) {
+  PT(Texture) tex = assets::ModelCache::get().texture(texPath);
+  CardMaker cm(name.empty() ? "aodna_card" : name);
+  std::string low = name + texPath;
+  for (auto &c : low) c = (char)tolower((unsigned char)c);
+  if (low.find("bat") != std::string::npos) cm.set_frame(-0.5f, 0.5f, -0.35f, 0.35f);
+  else cm.set_frame(-1.0f, 1.0f, -1.0f, 1.0f);
+  NodePath card(cm.generate());
+  if (tex) card.set_texture(tex, 1);
+  card.set_transparency(TransparencyAttrib::M_alpha);
+  card.set_two_sided(true);
+  card.set_light_off(1);
+  card.set_color_scale_off(1);
+  card.set_depth_write(false);
+  card.set_bin("transparent", 20);
+  if (billboard) card.set_effect(BillboardEffect::make_point_eye());
+  return card;
+}
+
+void Scene::prepareAttachParents(const dna::Document &doc, assets::Storage &st) {
+  // Collect parent_code values from editable props so holders exist before gen.
+  std::set<std::string> codes;
+  dna::walk(doc.root.get(), [&](const dna::XmlNode *n) {
+    if (n->tag != "prop" && n->tag != "anim_prop" && n->tag != "interactive_prop") return;
+    std::string pc = n->attr("parent_code");
+    if (!pc.empty()) codes.insert(pc);
+  });
+  for (auto &c : codes) ensureAttachParent(c, st, &doc);
+}
+
+NodePath Scene::ensureAttachParent(const std::string &code, assets::Storage &st, const dna::Document *doc) {
+  auto it = attachParents_.find(code);
+  if (it != attachParents_.end() && !it->second.is_empty()) return it->second;
+  NodePath holder = geom.attach_new_node("aodna_parent_" + code);
+  LPoint3 pos(0, 0, 0); LVecBase3 hpr(0, 0, 0);
+  bool found = doc && lookupHostPropXform(*doc, code, pos, hpr);
+  if (found) {
+    holder.set_pos(pos);
+    holder.set_hpr(hpr);
+  } else {
+    core::warn("ATTACH-TO-MODEL: no host xform for parent_code=" + code + " (props at local origin)");
+  }
+  // Ghost of the parent model for placement context (not an editable item).
+  NodePath src = st.findNode(code);
+  if (!src.is_empty()) {
+    NodePath ghost = src.copy_to(holder);
+    ghost.set_name("aodna_parent_ghost");
+    ghost.set_transparency(TransparencyAttrib::M_alpha);
+    ghost.set_color_scale(1, 1, 1, 0.45f);
+    ghost.set_light_off(1);
+    { auto cc = ghost.find_all_matches("**/+CollisionNode"); cc.hide(); }
+  } else {
+    core::warn("ATTACH-TO-MODEL: parent model not in storage: " + code);
+  }
+  attachParents_[code] = holder;
+  return holder;
 }
 
 NodePath makeMarker(const LColor &c, float s) {
@@ -223,9 +341,35 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
     np = parent.attach_new_node(t == "visgroup" ? "vg_" + n->attr("zone") : n->attr("name", t));
     if (t == "visgroup") visgroupNodes[n->attr("zone")] = np;
   } else if (t == "prop" || t == "anim_prop" || t == "interactive_prop") {
-    NodePath src = st.findNode(n->attr("code"));
-    np = src.is_empty() ? parent.attach_new_node(n->attr("name", "prop")) : src.copy_to(parent);
-    if (src.is_empty() && n->attr("code") != "DCS") { NodePath m = makeMarker(LColor(1, 0.2, 0.8, 1), 1.5f); m.reparent_to(np); }
+    // Appearance Override: model= path and/or parent_code ATTACH-TO-MODEL (local pose under host).
+    std::string code = n->attr("code");
+    std::string model = n->attr("model");
+    std::string parentCode = n->attr("parent_code");
+    NodePath host = parent;
+    if (!parentCode.empty()) {
+      auto pit = attachParents_.find(parentCode);
+      if (pit != attachParents_.end() && !pit->second.is_empty()) host = pit->second;
+      else host = ensureAttachParent(parentCode, st, nullptr);
+    }
+    NodePath src;
+    bool isCard = n->attr("card") == "1" || n->attr("card") == "true" ||
+                  (!model.empty() && (model.size() > 4 &&
+                   (model.compare(model.size() - 4, 4, ".png") == 0 ||
+                    model.compare(model.size() - 4, 4, ".PNG") == 0 ||
+                    model.compare(model.size() - 4, 4, ".jpg") == 0)));
+    if (isCard && !model.empty()) {
+      bool bb = n->attr("billboard") == "1" || n->attr("billboard") == "true";
+      NodePath card = makeTexturedCard(model, n->attr("name", "prop"), bb);
+      np = host.attach_new_node(n->attr("name", "prop"));
+      card.reparent_to(np);
+    } else {
+      if (!code.empty()) src = st.findNode(code);
+      if (src.is_empty() && !model.empty()) src = assets::ModelCache::get().load(model);
+      np = src.is_empty() ? host.attach_new_node(n->attr("name", "prop")) : src.copy_to(host);
+      if (src.is_empty() && code != "DCS") {
+        NodePath m = makeMarker(LColor(1, 0.2, 0.8, 1), 1.5f); m.reparent_to(np);
+      }
+    }
     np.set_name(n->attr("name", "prop"));
   } else if (t == "street") {
     NodePath s = st.findNode(n->attr("code"));
@@ -343,6 +487,7 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
 void Scene::build(const dna::Document &doc, assets::Storage &st) {
   clear();
   itemNodes.assign(doc.items.size(), NodePath());
+  prepareAttachParents(doc, st);
   std::map<const dna::XmlNode *, int> ids;
   for (size_t i = 0; i < doc.items.size(); i++) if (doc.items[i].node) ids[doc.items[i].node] = (int)i;
   for (auto &c : doc.root->children) gen(c.get(), geom, doc.text, st, &ids, nullptr, nullptr);

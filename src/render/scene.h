@@ -34,6 +34,11 @@ class Scene {
   void gen(const dna::XmlNode *n, NodePath parent, const std::string &src, assets::Storage &st,
            const std::map<const dna::XmlNode *, int> *ids, float *wallHeight, const dna::XmlNode *flat);
   std::map<std::string, int> unknownTags_;
+  // Appearance Override ATTACH-TO-MODEL: parent_code -> world-placed holder
+  std::map<std::string, NodePath> attachParents_;
+  NodePath ensureAttachParent(const std::string &code, assets::Storage &st,
+                             const dna::Document *doc);
+  void prepareAttachParents(const dna::Document &doc, assets::Storage &st);
 };
 
 NodePath makeMarker(const LColor &c, float size);   // small octahedron, unlit
