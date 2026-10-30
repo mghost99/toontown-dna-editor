@@ -270,10 +270,15 @@ std::string Document::buildSave(SaveStats *st) const {
   // additions: into their visgroup (or first visgroup / first element)
   std::map<std::string, const XmlNode *> vg; const XmlNode *firstVg = nullptr;
   walk(root.get(), [&](const XmlNode *n) { if (n->tag == "visgroup") { if (!firstVg) firstVg = n; vg.emplace(n->attr("zone"), n); } });
+  const XmlNode *lastSceneGroup = nullptr;
+  walk(root.get(), [&](const XmlNode *n) { if (n->tag == "group" && n->parent && n->parent->tag == "scene") lastSceneGroup = n; });
   std::map<size_t, std::string> ins;
   for (auto &it : items) {
     if (it.origId >= 0 || it.deleted) continue;
     const XmlNode *host = vg.count(it.visgroup) ? vg[it.visgroup] : firstVg;
+    // Appearance Override files have no visgroups: the game only reads <prop> inside a <group>,
+    // so new props go into the last <group> under <scene>, never loose at scene level.
+    if (!host) host = lastSceneGroup;
     if (!host && !root->children.empty()) host = root->children[0].get();
     if (!host) continue;
     size_t endtag = dnaText ? host->end - 1 : text.rfind("</", host->end - 1);
