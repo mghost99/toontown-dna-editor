@@ -23,7 +23,11 @@ class Editor {
   void select(const std::vector<int> &ids);
   void moveSelectedBy(const LVector3 &d, bool commit);
   void yawSelectedBy(float deg, bool commit);            // heading delta, one undo step if commit
+  void pitchSelectedBy(float deg, bool commit);          // pitch delta, one undo step if commit
+  void scaleSelectedUniform(float factor, bool commit);  // multiplicative uniform scale, clamp > 0.01
   float yawStep() const { return snap.on ? snap.angle : 15.f; }   // world-space delta, one undo step if commit
+  float wheelAngleStep() const { return snap.on ? snap.angle : 5.f; }  // Ctrl/Alt+wheel heading/pitch step
+  bool snapActive() const;  // snap.on and Alt not held (Alt = temporary bypass)
   void beginEdit(); void endEdit(const char *label);
   void duplicateSelected(); void deleteSelected();
   bool openPreview(int catIndex);
@@ -83,6 +87,7 @@ class Editor {
   void rebuildScene();
   void syncItems(const std::vector<int> &ids);
   void dockLayout(unsigned id);
+  bool consumeSelectionWheel(const ImGuiIO &io);  // Shift/Ctrl(/Alt) wheel on selection; sets wheelUsed_
   void viewport3D(); void viewport2D(); void previewWindow(); void menuBar(); void shortcuts(); void statusBar();
   void visgroupsPanel(); void statsPanel(); void openDialog(); void resDialog(); void passwordDialog();
   // Appearance Override DNA (opt-in): panel only when the open file has appearance_override="1".

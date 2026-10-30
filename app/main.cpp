@@ -78,6 +78,7 @@ int main(int argc, char **argv) {
   if (const char *pw = getenv("DNAED_PDNA_PASSWORD")) if (*pw) dna::setSessionPassword(pw);
   std::string res, file, selftest, snapPath; platform::Options o; int preSel = -1; int preOp = -1;
   bool doSave = false; float dpos[3] = {0, 0, 0}; bool haveDpos = false;
+  float dscale = 0; bool haveDscale = false;
   std::string convIn, convOut; bool encryptOut = false;
   for (int i = 1; i < argc; i++) {
     std::string a = argv[i];
@@ -92,6 +93,8 @@ int main(int argc, char **argv) {
     else if (a == "--gizmo" && i + 1 < argc) preOp = atoi(argv[++i]);
     else if (a == "--delta-pos" && i + 1 < argc) {
       haveDpos = sscanf(argv[++i], "%f,%f,%f", &dpos[0], &dpos[1], &dpos[2]) >= 1;
+    } else if (a == "--delta-scale" && i + 1 < argc) {
+      haveDscale = sscanf(argv[++i], "%f", &dscale) >= 1;
     } else if (a == "--save") doSave = true;
     else if (a == "--snap-and-exit" && i + 1 < argc) snapPath = argv[++i];
     else if (a == "--size" && i + 1 < argc) sscanf(argv[++i], "%dx%d", &o.width, &o.height);
@@ -145,6 +148,17 @@ int main(int argc, char **argv) {
     ed.doc.textDirty = true;
     ed.scene.syncItem(ed.doc, preSel);
     printf("(%.3f,%.3f,%.3f)\n", it.xf.x, it.xf.y, it.xf.z);
+  }
+  if (haveDscale && preSel >= 0 && preSel < (int)ed.doc.items.size()) {
+    auto &it = ed.doc.items[preSel];
+    printf("delta-scale on [%d] %s: (%.3f,%.3f,%.3f) -> ", preSel, it.name.c_str(), it.xf.sx, it.xf.sy, it.xf.sz);
+    double f = dscale;
+    it.xf.sx = std::max(0.01, it.xf.sx * f);
+    it.xf.sy = std::max(0.01, it.xf.sy * f);
+    it.xf.sz = std::max(0.01, it.xf.sz * f);
+    ed.doc.textDirty = true;
+    ed.scene.syncItem(ed.doc, preSel);
+    printf("(%.3f,%.3f,%.3f)\n", it.xf.sx, it.xf.sy, it.xf.sz);
   }
   if (doSave) {
     bool ok = ed.save("");

@@ -260,7 +260,18 @@ int inspectorPanel(dna::Item *it, int index, dna::Xform &x, const dna::Document 
   }
 
   ImGui::Dummy(ImVec2(0, 6));
-  ImGui::SeparatorText("Transform");
+  std::string parentCode;
+  if (it->node) parentCode = it->node->attr("parent_code");
+  if (parentCode.empty() && !it->templateXml.empty()) {
+    auto a = it->templateXml.find("parent_code=\"");
+    if (a != std::string::npos) {
+      a += 13; auto b = it->templateXml.find('"', a);
+      if (b != std::string::npos) parentCode = it->templateXml.substr(a, b - a);
+    }
+  }
+  std::string xformTitle = parentCode.empty() ? "Transform" : ("Transform (local to " + parentCode + ")");
+  ImGui::SeparatorText(xformTitle.c_str());
+  ImGui::TextDisabled("Ctrl+click a field to type. Local to parent_code when attached.");
   int r = 0;
   auto field = [&](const char *id, const char *label, double &v, float speed) {
     ImGui::AlignTextToFramePadding();
@@ -280,6 +291,21 @@ int inspectorPanel(dna::Item *it, int index, dna::Xform &x, const dna::Document 
   field("hh", "Heading", x.h, 0.5f); field("pp", "Pitch", x.p, 0.5f); field("rr", "Roll", x.r, 0.5f);
   ImGui::Dummy(ImVec2(0, 4));
   ImGui::TextDisabled("Scale");
+  {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextDisabled("Uniform");
+    ImGui::SameLine(108);
+    ImGui::SetNextItemWidth(-1);
+    float uni = (float)((x.sx + x.sy + x.sz) / 3.0);
+    ImGui::PushID("su");
+    if (ImGui::DragFloat("##uni", &uni, 0.01f, 0.01f, 0, "%.3f")) {
+      if (uni < 0.01f) uni = 0.01f;
+      x.sx = x.sy = x.sz = uni;
+      r = std::max(r, 1);
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) r = 2;
+    ImGui::PopID();
+  }
   field("sx", "X", x.sx, 0.01f); field("sy", "Y", x.sy, 0.01f); field("sz", "Z", x.sz, 0.01f);
   return r;
 }
@@ -331,13 +357,19 @@ void helpPanel() {
       ImGui::EndTable();
     }
   };
-  section("Select and edit", {{"Left click", "Select an object. Hold Ctrl to add to the selection."},
+  section("Select and edit", {{"Left click", "Select an object. Hold Ctrl to add to the selection. Alt picks the parent."},
     {"Left drag", "Move selected objects at their current height."}, {"Shift + left drag", "Rotate selected objects. Scroll during the drag to turn by one step."},
     {"W / E / R", "Move, rotate, or scale gizmo."}, {"Q", "Turn off the gizmo."}, {"[ / ]", "Turn by one angle step. Hold Shift for 90 degrees."},
-    {"X", "Toggle snapping."}, {"Arrow keys", "Nudge the selection."}, {"Ctrl + D / Delete", "Duplicate or delete the selection."}});
+    {"X", "Toggle snapping."}, {"Alt (hold)", "While dragging the gizmo or selection, temporarily bypass snap so props can overlap the host (e.g. cobwebs)."},
+    {"Arrow keys", "Nudge the selection."}, {"Ctrl + D / Delete", "Duplicate or delete the selection."}});
   section("Camera", {{"Right drag", "Look around from the camera's current position."},
-    {"Middle drag", "Pan. Shift + right drag also pans."}, {"Wheel", "Move forward or backward. Hold Shift for fine steps."},
+    {"Middle drag", "Pan. Shift + right drag also pans."}, {"Wheel", "Zoom the camera (3D or 2D map). Hold Shift for fine steps when nothing is selected."},
     {"View > Camera speed", "Set and save the wheel speed."}, {"F / Home", "Frame the selection or the whole map."}, {"L", "Cycle the lighting."}});
+  section("Selection + mouse wheel", {
+    {"Shift + wheel", "Scale the selection uniformly (~5% per notch). Clamped above 0.01. Camera does not zoom."},
+    {"Ctrl + wheel", "Rotate heading by the snap angle (15° with Snap on, else ~5°). Camera does not zoom."},
+    {"Ctrl + Alt + wheel", "Rotate pitch by the same angle step (Alt alone is snap-bypass while dragging, not while scrolling). Camera does not zoom."},
+    {"R (scale gizmo)", "Scale with the gizmo; Inspector Uniform / XYZ also edit scale. Ctrl+S writes <scale>."}});
   section("Walk through the map", {{"F5", "Start or stop the Toon walker and restore the editing camera."},
     {"Up / Down", "Walk forward or backward."}, {"Left / Right", "Turn the Toon."}, {"Ctrl", "Jump. Point at the 3D view to control the Toon."}});
   section("Files and history", {{"Ctrl + S / Ctrl + O", "Save or open a file. Saving creates a backup."},

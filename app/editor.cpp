@@ -152,7 +152,7 @@ void Editor::pushXformFromNode(int id, bool fromGizmo) {
   NodePath n = scene.itemNodes[id]; auto &x = doc.items[id].xf;
   LPoint3 p = n.get_pos(); LVecBase3 h = n.get_hpr(), s = n.get_scale();
   x.x = p[0]; x.y = p[1]; x.z = p[2]; x.h = h[0]; x.p = h[1]; x.r = h[2]; x.sx = s[0]; x.sy = s[1]; x.sz = s[2];
-  if (fromGizmo && snap.on) {   // float noise from matrix decomposition: land exactly on the snap steps
+  if (fromGizmo && snapActive()) {   // float noise from matrix decomposition: land exactly on the snap steps
     auto q = [](double v, double st) { double r = std::round(v / st) * st; return std::fabs(r - v) < st * 0.05 ? r : v; };
     if (gizmoOp == render::GizmoOp::Rotate) { x.h = q(x.h, snap.angle); x.p = q(x.p, snap.angle); x.r = q(x.r, snap.angle); }
     if (gizmoOp == render::GizmoOp::Translate) { x.x = q(x.x, snap.move); x.y = q(x.y, snap.move); x.z = q(x.z, snap.move); }
@@ -188,6 +188,49 @@ void Editor::yawSelectedBy(float deg, bool commit) {
     x.h = h; scene.syncItem(doc, i);
   }
   if (commit) endEdit("Rotate");
+}
+
+void Editor::pitchSelectedBy(float deg, bool commit) {
+  if (selection.empty()) return;
+  if (commit) beginEdit();
+  for (int i : selection) {
+    auto &x = doc.items[i].xf; double p = x.p + deg;
+    if (snap.on && snap.angle > 0) p = std::round(p / snap.angle) * snap.angle;
+    x.p = p; scene.syncItem(doc, i);
+  }
+  if (commit) endEdit("Rotate");
+}
+
+void Editor::scaleSelectedUniform(float factor, bool commit) {
+  if (selection.empty() || factor <= 0) return;
+  if (commit) beginEdit();
+  for (int i : selection) {
+    auto &x = doc.items[i].xf;
+    x.sx = std::max(0.01, x.sx * factor);
+    x.sy = std::max(0.01, x.sy * factor);
+    x.sz = std::max(0.01, x.sz * factor);
+    scene.syncItem(doc, i);
+  }
+  if (commit) endEdit("Scale");
+}
+
+bool Editor::consumeSelectionWheel(const ImGuiIO &io) {
+  if (selection.empty() || io.MouseWheel == 0.f || wheelUsed_) return false;
+  const bool shift = io.KeyShift, ctrl = io.KeyCtrl, alt = io.KeyAlt;
+  if (!shift && !ctrl) return false;
+  const float w = io.MouseWheel;
+  if (ctrl && alt) {
+    pitchSelectedBy((w > 0 ? 1.f : -1.f) * wheelAngleStep() * std::max(1.f, std::fabs(w)), true);
+  } else if (shift) {
+    // ~5% per notch, multiplicative (fractional wheels scale proportionally)
+    scaleSelectedUniform(std::pow(1.05f, w), true);
+  } else if (ctrl) {
+    yawSelectedBy((w > 0 ? 1.f : -1.f) * wheelAngleStep() * std::max(1.f, std::fabs(w)), true);
+  } else {
+    return false;
+  }
+  wheelUsed_ = true;
+  return true;
 }
 
 void Editor::moveSelectedBy(const LVector3 &d, bool commit) {
@@ -308,7 +351,12 @@ void Editor::frameSelection() {
   v3->target = (mn + mx) * 0.5f; v3->dist = std::max(15.f, (mx - mn).length() * 1.6f); v3->apply();
   v2->target = v3->target; v2->span = std::max(40.f, std::max(mx[0] - mn[0], mx[1] - mn[1]) * 3); v2->apply();
 }
-float Editor::snapv(float v) const { return snap.on && snap.move > 0 ? std::round(v / snap.move) * snap.move : v; }
+float Editor::snapv(float v) const {
+  // Hold Alt while dragging to temporarily bypass snap (cobwebs overlapping the host, etc.).
+  if (ImGui::GetIO().KeyAlt) return v;
+  return snap.on && snap.move > 0 ? std::round(v / snap.move) * snap.move : v;
+}
+bool Editor::snapActive() const { return snap.on && !ImGui::GetIO().KeyAlt; }
 
 const Editor::Box &Editor::boxOf(int i) {
   auto &b = boxes_[i];
@@ -429,13 +477,13 @@ bool Editor::handleDrag(render::View &v, bool topDown, bool hovered) {
     if (!dragging_ && dx * dx + dy * dy > 16) { dragging_ = true; beginEdit(); }
     if (dragging_ && io.MouseWheel != 0) {   // wheel while dragging: yaw by one step per notch
       float st = yawStep();
-      for (size_t k = 0; k < editIds_.size(); k++) { auto &x = doc.items[editIds_[k]].xf; x.h += (io.MouseWheel > 0 ? st : -st); if (snap.on) x.h = std::round(x.h / st) * st; scene.syncItem(doc, editIds_[k]); }
+      for (size_t k = 0; k < editIds_.size(); k++) { auto &x = doc.items[editIds_[k]].xf; x.h += (io.MouseWheel > 0 ? st : -st); if (snapActive()) x.h = std::round(x.h / st) * st; scene.syncItem(doc, editIds_[k]); }
       wheelUsed_ = true;
     }
     if (dragging_ && rotDrag_) {   // Shift+drag: horizontal motion = yaw (0.5 deg/px), snapped
       double t0 = core::nowMs();
       float raw = dx * 0.5f * (topDown ? -1.f : -1.f);
-      float st = snap.on && snap.angle > 0 ? snap.angle : 0.f;
+      float st = snapActive() && snap.angle > 0 ? snap.angle : 0.f;
       float a = st > 0 ? std::round(raw / st) * st : raw;
       for (size_t k = 0; k < editIds_.size(); k++) { auto &x = doc.items[editIds_[k]].xf; x.h = editBefore_[k].h + a; scene.syncItem(doc, editIds_[k]); }
       rotAccum_ = a;
@@ -530,7 +578,8 @@ void Editor::viewport3D() {
     bool was = editing_ && !dragging_;
     bool gChanged = false;
     const Box &bx = boxOf(p0);
-    using_ = render::gizmo(*v3, scene.itemNodes[p0], gizmoOp, snap, &gizmoHover, &gChanged, (bx.mn + bx.mx) * 0.5f);
+    render::GizmoSnap gizmoSnap = snap; if (io.KeyAlt) gizmoSnap.on = false;
+    using_ = render::gizmo(*v3, scene.itemNodes[p0], gizmoOp, gizmoSnap, &gizmoHover, &gChanged, (bx.mn + bx.mx) * 0.5f);
     if (gChanged && !using_ && was) pushXformFromNode(p0, true);   // last update arrives on the release frame
     if (using_) {
       if (!was) { selection = {p0}; beginEdit(); }
@@ -547,10 +596,15 @@ void Editor::viewport3D() {
     return LVector3(std::sin(y) * std::cos(pth), std::cos(y) * std::cos(pth), std::sin(pth));
   };
   if ((own || (hovered && pointerView_ == 0)) && io.MouseWheel != 0 && !wheelUsed_) {
-    // Fractional touchpad input stays fractional. Speed is independent of the
-    // map's size or the distance retained from the last Frame All operation.
-    float step = io.MouseWheel * wheelSpeed * (io.KeyShift ? 0.2f : 1.f);
-    v3->target += viewFwd() * step;
+    if (consumeSelectionWheel(io)) {
+      // Shift/Ctrl(/Alt)+wheel scaled or rotated the selection; do not zoom the camera.
+    } else {
+      // Fractional touchpad input stays fractional. Speed is independent of the
+      // map's size or the distance retained from the last Frame All operation.
+      // Fine zoom (Shift) only when nothing is selected (selection wheel owns Shift).
+      float step = io.MouseWheel * wheelSpeed * (io.KeyShift ? 0.2f : 1.f);
+      v3->target += viewFwd() * step;
+    }
   }
   bool pan = own && (ImGui::IsMouseDown(2) || (ImGui::IsMouseDown(1) && io.KeyShift));
   if (own && ImGui::IsMouseDown(1) && !io.KeyShift) orbiting_ = true;
@@ -572,7 +626,8 @@ void Editor::viewport3D() {
   // overlay
   ImDrawList *dl = ImGui::GetWindowDrawList();
   const char *ops[] = {"Q drag", "W move", "E rotate", "R scale"};
-  std::string hud = fmt("%s   |   snap %s (X)   |   %s   |   %.1f ms/frame", ops[(int)gizmoOp], snap.on ? "on" : "off",
+  const char *snapHud = !snap.on ? "off" : (io.KeyAlt ? "bypass (Alt)" : "on");
+  std::string hud = fmt("%s   |   snap %s (X)   |   %s   |   %.1f ms/frame", ops[(int)gizmoOp], snapHud,
                         light_.mode == render::LightMode::Game ? "Game light" : light_.mode == render::LightMode::Lit ? "Lit" : "Cog mood", lastFrameMs);
   dl->AddRectFilled(ImVec2(p.x + 8, p.y + 8), ImVec2(p.x + 16 + ImGui::CalcTextSize(hud.c_str()).x, p.y + 32), IM_COL32(15, 16, 20, 190), 5);
   dl->AddText(ImVec2(p.x + 12, p.y + 12), IM_COL32(220, 225, 235, 255), hud.c_str());
@@ -581,6 +636,7 @@ void Editor::viewport3D() {
 
 void Editor::viewport2D() {
   if (!showMap_) { v2->setActive(false); return; }
+  if (ImGui::GetIO().MouseWheel == 0) wheelUsed_ = false;
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
   ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0)); ImGui::PushStyleColor(ImGuiCol_DockingEmptyBg, ImVec4(0, 0, 0, 0));
   bool vis = ImGui::Begin("2D Map", &showMap_, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground);
@@ -601,14 +657,18 @@ void Editor::viewport2D() {
   else if (clicked && hovered && pointerView_ == 0) pointerView_ = 2;
   bool own = pointerView_ == 2;
   handleDrag(*v2, true, own || (hovered && pointerView_ == 0));
-  if ((own || (hovered && pointerView_ == 0)) && io.MouseWheel != 0 && !wheelUsed_) {   // zoom around the cursor
-    LPoint3 o, before, after; LVector3 d;
-    bool a = v2->ray(io.MousePos.x, io.MousePos.y, o, d) && render::rayPlaneZ(o, d, 0, before);
-    float mag = std::copysign(std::pow(std::fabs(io.MouseWheel), 0.65f), io.MouseWheel);
-    v2->span *= std::pow(0.97f, mag);
-    if (v2->span < 0.5f) v2->span = 0.5f;
-    v2->apply();
-    if (a && v2->ray(io.MousePos.x, io.MousePos.y, o, d) && render::rayPlaneZ(o, d, 0, after)) { v2->target += before - after; v2->target[2] = 0; }
+  if ((own || (hovered && pointerView_ == 0)) && io.MouseWheel != 0 && !wheelUsed_) {
+    if (consumeSelectionWheel(io)) {
+      // Selection transform consumed the wheel; leave the map zoom alone.
+    } else {   // zoom around the cursor
+      LPoint3 o, before, after; LVector3 d;
+      bool a = v2->ray(io.MousePos.x, io.MousePos.y, o, d) && render::rayPlaneZ(o, d, 0, before);
+      float mag = std::copysign(std::pow(std::fabs(io.MouseWheel), 0.65f), io.MouseWheel);
+      v2->span *= std::pow(0.97f, mag);
+      if (v2->span < 0.5f) v2->span = 0.5f;
+      v2->apply();
+      if (a && v2->ray(io.MousePos.x, io.MousePos.y, o, d) && render::rayPlaneZ(o, d, 0, after)) { v2->target += before - after; v2->target[2] = 0; }
+    }
   }
   if (own && (ImGui::IsMouseDown(1) || ImGui::IsMouseDown(2)) && (io.MouseDelta.x || io.MouseDelta.y)) {
     float k = v2->span / std::max(1.f, std::min(s.x, s.y));
