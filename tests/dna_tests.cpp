@@ -32,11 +32,12 @@ int main(int argc, char **argv) {
   CHECK(perr == 0);
   dna::Document d; CHECK(load(d, street));
   CHECK(d.fmt == dna::Format::Dna);
-  CHECK(d.items.size() == 7);
+  CHECK(d.items.size() == 8);   // 7 props/buildings + 1 street piece
   CHECK(d.visgroups.size() == 1 && d.visgroups[0] == "9101");
   int tree0 = findItem(d, "prop_sample_tree_DNARoot"), lamp = findItem(d, "prop_sample_lamp_DNARoot");
   int lm = findItem(d, "tb3:toon_landmark_sample_DNARoot"), nested = findItem(d, "prop_nested_DNARoot");
   CHECK(tree0 >= 0 && lamp >= 0 && lm >= 0 && nested >= 0);
+  { int st = findItem(d, "street_sample_DNARoot"); CHECK(st >= 0 && d.items[st].kind == "street" && d.items[st].code == "street_sample"); }   // streets are editable
   CHECK(d.items[tree0].code == "prop_sample_tree" && d.items[tree0].xf.x == 5 && d.items[tree0].xf.h == 90 && d.items[tree0].xf.sx == 1.25);
   CHECK(!d.items[nested].nested && d.items[nested].visgroup == "9101");   // under a plain node, not an editable
   { const dna::XmlNode *t = nullptr; dna::walk(d.root.get(), [&](const dna::XmlNode *n) { if (n->tag == "title") t = n; });
@@ -61,7 +62,7 @@ int main(int argc, char **argv) {
   CHECK(et.find("prop \"prop_added_DNARoot\"") != std::string::npos);
   CHECK(et.find("cell_id [ 0 ]") != std::string::npos);
   dna::Document d2; CHECK(load(d2, edited));
-  CHECK(d2.items.size() == 7);
+  CHECK(d2.items.size() == 8);
   int t2 = findItem(d2, "prop_sample_tree_DNARoot"), a2 = findItem(d2, "prop_added_DNARoot");
   CHECK(t2 >= 0 && std::fabs(d2.items[t2].xf.x - 7.5) < 1e-9 && d2.items[t2].xf.h == 180);
   CHECK(a2 >= 0 && d2.items[a2].xf.x == 3 && d2.items[a2].xf.y == 4);
@@ -71,10 +72,10 @@ int main(int argc, char **argv) {
 
   // 3. .dna -> .xml -> .dna keeps the scene
   { dna::Document x; load(x, street); CHECK(save(x, T + "/conv.xml"));
-    dna::Document xx; CHECK(load(xx, T + "/conv.xml")); CHECK(xx.fmt == dna::Format::Xml && xx.items.size() == 7);
+    dna::Document xx; CHECK(load(xx, T + "/conv.xml")); CHECK(xx.fmt == dna::Format::Xml && xx.items.size() == 8);
     int i = findItem(xx, "prop_sample_tree_DNARoot"); CHECK(i >= 0 && xx.items[i].xf.x == 5 && xx.items[i].xf.sx == 1.25);
     CHECK(save(xx, T + "/conv_back.dna"));
-    dna::Document xd; CHECK(load(xd, T + "/conv_back.dna")); CHECK(xd.items.size() == 7);
+    dna::Document xd; CHECK(load(xd, T + "/conv_back.dna")); CHECK(xd.items.size() == 8);
     std::string a, b; dna::compilePdna(xd.root.get(), xd.text, &a, nullptr); dna::compilePdna(x.root.get(), x.text, &b, nullptr);
     CHECK(a == b); }   // same compiled content after xml round trip
 
@@ -82,7 +83,7 @@ int main(int argc, char **argv) {
   std::string p1 = T + "/street.pdna", p2 = T + "/street2.pdna";
   { dna::Document x; load(x, street); CHECK(save(x, p1)); }
   { std::string b = dna::readFile(p1); CHECK(b.compare(0, 7, std::string("PDNA\n\0\n", 7)) == 0); }
-  { dna::Document x; CHECK(load(x, p1)); CHECK(x.fmt == dna::Format::Pdna && x.items.size() == 7);
+  { dna::Document x; CHECK(load(x, p1)); CHECK(x.fmt == dna::Format::Pdna && x.items.size() == 8);
     int i = findItem(x, "prop_sample_tree_DNARoot"); CHECK(i >= 0 && x.items[i].xf.x == 5 && x.items[i].xf.h == 90);
     x.items[i].xf.x = 9; CHECK(save(x, p2)); }
   { dna::Document x; CHECK(load(x, p2)); int i = findItem(x, "prop_sample_tree_DNARoot"); CHECK(i >= 0 && x.items[i].xf.x == 9);
@@ -107,7 +108,7 @@ int main(int argc, char **argv) {
     dna::setSessionPassword("");
     dna::Document e1; std::string err; CHECK(!e1.load(ep, T, &err)); CHECK(e1.loadError == dna::LoadError::NeedPassword);
     dna::setSessionPassword("wrong"); dna::Document e2; CHECK(!e2.load(ep, T, &err)); CHECK(e2.loadError == dna::LoadError::WrongPassword);
-    dna::setSessionPassword("hunter2"); dna::Document e3; CHECK(e3.load(ep, T, &err)); CHECK(e3.encrypted && e3.items.size() == 7);
+    dna::setSessionPassword("hunter2"); dna::Document e3; CHECK(e3.load(ep, T, &err)); CHECK(e3.encrypted && e3.items.size() == 8);
     CHECK(save(e3, T + "/enc2.pdna")); CHECK(dna::readFile(T + "/enc2.pdna") == enc);   // re-encrypted on save
     dna::setSessionPassword("");
   }

@@ -167,6 +167,9 @@ int main(int argc, char **argv) {
     float d = ed.v3->dist, y = ed.v3->yaw, p = ed.v3->pitch;
     if (sscanf(cam, "%f,%f,%f", &d, &y, &p) >= 1) { ed.v3->dist = d; ed.v3->yaw = y; ed.v3->pitch = p; ed.v3->apply(); }
   }
+  if (const char *vw = getenv("DNAED_VIEW")) {   // e2e: exact 3D orbit "tx,ty,tz,dist,yaw,pitch" (e.g. camera inside a tree)
+    float c[6]; if (sscanf(vw, "%f,%f,%f,%f,%f,%f", &c[0], &c[1], &c[2], &c[3], &c[4], &c[5]) == 6) { ed.v3->target = LPoint3(c[0], c[1], c[2]); ed.v3->dist = c[3]; ed.v3->yaw = c[4]; ed.v3->pitch = c[5]; ed.v3->apply(); }
+  }
   if (const char *ca = getenv("DNAED_CONTEXT_AREA")) ed.setContextArea(ca);   // e2e: pick a View > Playground context area
   if (const char *pz = getenv("DNAED_PASTE")) {   // e2e: Ctrl+C the selection, Ctrl+V at copied centre + "dx,dy,dz[,zone]"
     float dx = 0, dy = 0, dz = 0; char mode[16] = {0};

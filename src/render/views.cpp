@@ -122,8 +122,16 @@ static PickHit castRaySkip(NodePath root, const LPoint3 &o, const LVector3 &dIn,
     LPoint3 pt = e->get_surface_point(root.get_top());
     if ((pt - o).length() > maxDist) break;
     NodePath t = n.find_net_tag("eid");
+    LVector3 nrm = e->has_surface_normal() ? e->get_surface_normal(root.get_top()) : LVector3(0, 0, 1);
+    if (nrm.dot(d) > 0 && !t.is_empty()) {
+      // Back face of an object the camera is inside (tree canopy, building, wall): the camera is stuck in it,
+      // so look past it to what the user actually clicked instead of selecting the enclosure.
+      LPoint3 a, b;
+      if (t.calc_tight_bounds(a, b, root.get_top()) && o[0] >= a[0] && o[0] <= b[0] && o[1] >= a[1] && o[1] <= b[1] &&
+          o[2] >= a[2] && o[2] <= b[2]) continue;
+    }
     h.hit = true; h.node = n; h.point = pt; h.t = (pt - o).length();
-    h.normal = e->has_surface_normal() ? e->get_surface_normal(root.get_top()) : LVector3(0, 0, 1);
+    h.normal = nrm;
     if (h.normal.dot(d) > 0) h.normal = -h.normal;   // face the ray
     h.normal.normalize();
     if (!t.is_empty()) h.eid = atoi(t.get_net_tag("eid").c_str());

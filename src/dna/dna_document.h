@@ -9,7 +9,7 @@
 
 namespace dna {
 
-extern const std::set<std::string> kEditable;   // prop, anim_prop, interactive_prop, treasure_spawn, *_building
+extern const std::set<std::string> kEditable;   // prop, anim_prop, interactive_prop, treasure_spawn, *_building, street
 
 struct Xform {
   double x = 0, y = 0, z = 0, h = 0, p = 0, r = 0, sx = 1, sy = 1, sz = 1;

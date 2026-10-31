@@ -115,7 +115,8 @@ class Editor {
   struct Box { LPoint3 mn, mx; bool ok = false; };
   std::map<int, Box> boxes_;
   const Box &boxOf(int i);
-  bool rayBox(int i, const LPoint3 &o, const LVector3 &d, float &tEnter);
+  // inside (optional): the ray origin (camera) is inside the box, so tEnter is 0
+  bool rayBox(int i, const LPoint3 &o, const LVector3 &d, float &tEnter, bool *inside = nullptr);
   int pickItem(render::View &v, float px, float py, LPoint3 &hitPt);   // whole-object pick (selected box first)
   render::GizmoOp prevOp_ = render::GizmoOp::None;
   void rebuildScene();

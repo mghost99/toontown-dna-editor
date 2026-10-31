@@ -49,8 +49,8 @@ static std::string lower(std::string s) { for (auto &c : s) c = (char)std::tolow
 int palettePanel(const std::vector<dna::CatalogEntry> &cat, PaletteState &st, const std::set<std::string> &loaded) {
   int clicked = -1;
   ImGui::SetNextItemWidth(-1);
-  ImGui::InputTextWithHint("##pf", "Search props (name, model, storage)...", st.filter, sizeof st.filter);
-  const char *roots[] = {"All", "In this file's storage", "prop", "anim_prop", "interactive_prop", "holiday_prop"};
+  ImGui::InputTextWithHint("##pf", "Search props / streets (name, model, storage)...", st.filter, sizeof st.filter);
+  const char *roots[] = {"All", "In this file's storage", "prop", "anim_prop", "interactive_prop", "holiday_prop", "street"};
   ImGui::SetNextItemWidth(-1);
   ImGui::Combo("##root", &st.rootFilter, roots, IM_ARRAYSIZE(roots));
   if (st.lastFilter != st.filter || st.lastRoot != st.rootFilter) {   // filter only when it changes

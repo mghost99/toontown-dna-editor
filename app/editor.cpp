@@ -516,7 +516,8 @@ int Editor::placePreviewed(const LPoint3 *at, const dna::Xform *full) {
   }
   if (previewAnimation_.empty() && !previewAnimations_.empty())
     core::warn("placed " + e.code + " as a plain prop: its animations are embedded in the model, so no anim name is written");
-  dna::Item it; it.kind = previewAnimation_.empty() ? "prop" : (e.root == "interactive_prop" ? "interactive_prop" : "anim_prop");
+  const bool isStreet = e.root == "street";   // DNAStreet: street / sidewalk / park ground piece
+  dna::Item it; it.kind = isStreet ? "street" : previewAnimation_.empty() ? "prop" : (e.root == "interactive_prop" ? "interactive_prop" : "anim_prop");
   it.code = e.code; it.name = e.code;
   { // unique name, so the Objects list / Inspector never confuse two copies of the same prop
     auto taken = [&](const std::string &n) { for (auto &o : doc.items) if (!o.deleted && o.name == n) return true; return false; };
@@ -527,7 +528,18 @@ int Editor::placePreviewed(const LPoint3 *at, const dna::Xform *full) {
   if (ovModel) it.templateXml += " model=\"" + e.model + "\"";
   if (!previewAnimation_.empty()) it.templateXml += " anim=\"" + previewAnimation_ + "\"";
   if (it.kind == "interactive_prop") it.templateXml += " cell_id=\"0\"";
-  it.templateXml += ">\n\t<pos x=\"0.00\" y=\"0.00\" z=\"0.00\" />\n\t<nhpr h=\"0.00\" p=\"0.00\" r=\"0.00\" />\n</" + it.kind + ">";
+  it.templateXml += ">\n\t<pos x=\"0.00\" y=\"0.00\" z=\"0.00\" />\n\t<nhpr h=\"0.00\" p=\"0.00\" r=\"0.00\" />\n";
+  if (isStreet) {
+    // DNAStreet textures (street, sidewalk, curb): reuse the ones this file's streets already use, so a
+    // new piece matches the neighborhood; with no street in the file the model keeps its own textures.
+    std::vector<std::string> tex;
+    for (auto &o : doc.items) {
+      if (o.kind != "street" || !o.node || !tex.empty()) continue;
+      for (auto &c : o.node->children) if (c->tag == "texture") tex.push_back(c->text(doc.text));
+    }
+    for (auto &t : tex) if (!t.empty()) it.templateXml += "\t<texture>" + t + "</texture>\n";
+  }
+  it.templateXml += "</" + it.kind + ">";
   LPoint3 p = at ? *at : placementPoint();
   it.xf.x = snapv(p[0]); it.xf.y = snapv(p[1]); it.xf.z = p[2];
   if (full) it.xf = *full;   // surface snap: exact pose, no grid snap
@@ -587,7 +599,7 @@ const Editor::Box &Editor::boxOf(int i) {
   return b;
 }
 // ray vs the item's oriented bounding box (slab test in the item's local frame; t is world distance)
-bool Editor::rayBox(int i, const LPoint3 &o, const LVector3 &d, float &tEnter) {
+bool Editor::rayBox(int i, const LPoint3 &o, const LVector3 &d, float &tEnter, bool *inside) {
   NodePath n = scene.itemNodes[i]; if (n.is_empty() || n.is_hidden() || doc.items[i].deleted) return false;
   const Box &b = boxOf(i);
   LMatrix4 inv; inv.invert_from(n.get_mat(scene.world));
@@ -599,6 +611,7 @@ bool Editor::rayBox(int i, const LPoint3 &o, const LVector3 &d, float &tEnter) {
     t0 = std::max(t0, ta); t1 = std::min(t1, tb); if (t0 > t1) return false;
   }
   if (t1 < 0) return false;
+  if (inside) *inside = t0 < 0;
   tEnter = std::max(t0, 0.f);   // affine map keeps the ray parameter; d is unit length in world space
   return true;
 }
@@ -612,15 +625,22 @@ int Editor::pickItem(render::View &v, float px, float py, LPoint3 &hitPt) {
   auto vol = [&](int i) { const Box &b = boxOf(i); LVecBase3 s = scene.itemNodes[i].get_scale(scene.world);
     return std::fabs((b.mx[0] - b.mn[0]) * s[0] * (b.mx[1] - b.mn[1]) * s[1] * (b.mx[2] - b.mn[2]) * s[2]); };
   if (best >= 0) bestVol = vol(best);
+  //    Only small things (lamp posts, signs, benches...) get this help. A box the camera is inside never
+  //    counts (the camera stuck in a tree/building used to select that tree instead of what was clicked),
+  //    and big objects (gazebo, trees, buildings) need a real geometry hit: their boxes are mostly empty
+  //    air and used to steal clicks on the ground / pond / streets behind them.
+  const float kHelpMaxVol = 1000.f;   // ft^3 (~10x10x10)
   for (int i = 0; i < (int)doc.items.size(); i++) {
-    if (i == h.eid) continue; float t;
-    if (!rayBox(i, o, d, t) || t > tg + 0.01f) continue;
-    float vv = vol(i); if (vv < bestVol) { bestVol = vv; best = i; }
+    if (i == h.eid) continue; float t; bool in = false;
+    if (!rayBox(i, o, d, t, &in) || in || t > tg + 0.01f) continue;
+    float vv = vol(i); if (vv > kHelpMaxVol) continue;
+    if (vv < bestVol) { bestVol = vv; best = i; }
   }
   // 3) a selected object keeps the click inside its outline box only if it is no bigger than what would be picked
-  //    otherwise (so a selected playground/street model never swallows clicks on the props standing on it)
+  //    otherwise (so a selected playground/street model never swallows clicks on the props standing on it),
+  //    and never while the camera is inside that box
   for (int i : selection) {
-    float t; if (!rayBox(i, o, d, t)) continue;
+    float t; bool in = false; if (!rayBox(i, o, d, t, &in) || in) continue;
     if (best < 0 || i == best || vol(i) <= bestVol) { hitPt = o + d * t; if (i == best && h.hit && best == h.eid) hitPt = h.point; return i; }
   }
   if (best >= 0) { float t; hitPt = (best == h.eid && h.hit) ? h.point : (rayBox(best, o, d, t) ? o + d * t : h.point); }

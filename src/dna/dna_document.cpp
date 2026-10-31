@@ -11,7 +11,7 @@ namespace fs = std::filesystem;
 namespace dna {
 
 const std::set<std::string> kEditable = {"prop", "anim_prop", "interactive_prop", "treasure_spawn",
-                                         "flat_building", "landmark_building", "anim_building"};
+                                         "flat_building", "landmark_building", "anim_building", "street"};
 
 static bool close(double a, double b) { return std::fabs(a - b) < 1e-4; }
 bool Xform::operator==(const Xform &o) const {
@@ -502,7 +502,8 @@ std::vector<CatalogEntry> loadCatalog(const std::string &res) {
     walk(x.get(), [&](const XmlNode *n) {
       if (n->tag != "store_node") return;
       std::string root = n->attr("root");
-      if (root != "prop" && root != "holiday_prop" && root != "anim_prop" && root != "interactive_prop") return;
+      // street = DNAStreet pieces (streets, sidewalks, park/courtyard ground) placed as <street>
+      if (root != "prop" && root != "holiday_prop" && root != "anim_prop" && root != "interactive_prop" && root != "street") return;
       std::string c = n->attr("code"); if (c.empty() || seen.count(c)) return;
       seen[c] = {c, root, n->parent ? n->parent->attr("path") : "", n->attrs.count("node") ? n->attr("node") : c, r};
     });
