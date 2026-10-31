@@ -391,7 +391,7 @@ static void typesetBaseline(NodePath np, const dna::XmlNode *n, const std::strin
     }
     glyph.set_pos_hpr_scale(pos, hpr, letterScale);
     if (auto c = entry->child("color")) applyProp(c, glyph);
-    glyph.set_two_sided(true); glyph.set_depth_write(false); glyph.set_depth_offset(70);
+    glyph.set_two_sided(true); glyph.set_depth_write(false);   // depth offset comes from sign (3) + baseline (3), like DNATypesetter
     glyphs.push_back(glyph); ++counter;
   };
   std::vector<const dna::XmlNode *> entries;
@@ -481,10 +481,12 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
     if (w.is_empty()) { *wallH += h; return; }
     np = w.copy_to(parent);
     np.set_tag("dna_wall", "1");
-    double sy = 1, extraZ = 0;
+    // DNAWall stacks walls (setZ(wall_height)), then its <pos>/<scale> children are applied
+    // with setPos/setScale, which REPLACE the stacked z and the width/height scale (not add to them).
+    double sy = 1; bool hasPos = false; LPoint3 wpos(0, 0, 0);
     for (auto &c : n->children) {
       if (c->tag == "scale") sy = fl(c->attr("y"), 1);
-      else if (c->tag == "pos") extraZ = fl(c->attr("z"), 0);
+      else if (c->tag == "pos") { hasPos = true; wpos = LPoint3(fl(c->attr("x"), 0), fl(c->attr("y"), 0), fl(c->attr("z"), 0)); }
     }
     np.set_scale(std::max(width, 0.01), sy == 0 ? 1 : sy, std::max(h, 0.01));
     if (code.rfind("wall_pp_cog_", 0) == 0) {   // PPCogWalls: tiled 10 ft panels instead of one stretched picture
@@ -493,7 +495,7 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
     } else if (code.rfind("wall_pp_bay", 0) == 0) {
       static bool once = false; if (!once) { once = true; core::info("note: Bandwidth 3D office walls (wall_pp_bay*) are shown as plain stretched walls in the editor"); }
     }
-    np.set_z(*wallH + extraZ); *wallH += h;
+    if (hasPos) np.set_pos(wpos); else np.set_z(*wallH); *wallH += h;
   } else if (t == "windows") {
     NodePath w = st.findNode(n->attr("code")); int count = (int)fl(n->attr("count"), 0);
     if (!w.is_empty()) {
@@ -529,9 +531,10 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
     if (!origin.is_empty()) holder.set_transform(origin.get_transform(parent));
     NodePath b = st.findNode(n->attr("code"));
     np = b.is_empty() ? holder.attach_new_node("sign") : b.copy_to(holder);
-    np.set_depth_offset(50);
+    np.set_depth_offset(3);   // DNASign: DEPTH_OFFSET 3 (offsets are cumulative; big values punch through trees)
   } else if (t == "baseline") {
     np = parent.attach_new_node("baseline");
+    np.set_depth_offset(3);   // DNABaseline: DEPTH_OFFSET 3, total 6 for text
     for (auto &c : n->children) if (c->tag == "text_geom") {   // older .pdna: pre-rendered text model (zlib'd BAM)
       std::string raw = decompress_string(unb64(c->text(src)));
       if (raw.empty()) continue;
@@ -544,7 +547,7 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
         PT(PandaNode) model = bam.read_node();
         if (model) g = NodePath(model);
       }
-      if (!g.is_empty()) { g.reparent_to(np); g.set_two_sided(true); g.set_depth_offset(60); }
+      if (!g.is_empty()) { g.reparent_to(np); g.set_two_sided(true); }
     }
     if (!n->child("text_geom")) typesetBaseline(np, n, src, st);
   } else if (t == "text_geom" || t == "text" || t == "graphic" || t == "title" || t == "texture" ||
