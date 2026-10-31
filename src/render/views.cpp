@@ -99,9 +99,8 @@ bool rayPlaneZ(const LPoint3 &o, const LVector3 &d, float z, LPoint3 &out) {
   out = o + d * t; return true;
 }
 
-PickHit pick(const View &v, float px, float py, NodePath root) {
-  PickHit h; LPoint3 o; LVector3 d;
-  if (!v.ray(px, py, o, d)) return h;
+static PickHit castRaySkip(NodePath root, const LPoint3 &o, const LVector3 &dIn, float maxDist, NodePath skip) {
+  PickHit h; LVector3 d = dIn; d.normalize();
   static CollisionTraverser trav("pick"); static PT(CollisionHandlerQueue) q = new CollisionHandlerQueue();
   static PT(CollisionRay) ray = new CollisionRay(); static NodePath rnp;
   if (rnp.is_empty()) {
@@ -119,12 +118,28 @@ PickHit pick(const View &v, float px, float py, NodePath root) {
     auto *e = q->get_entry(i);
     NodePath n = e->get_into_node_path();
     if (n.is_hidden()) continue;
+    if (!skip.is_empty() && (n == skip || skip.is_ancestor_of(n))) continue;
+    LPoint3 pt = e->get_surface_point(root.get_top());
+    if ((pt - o).length() > maxDist) break;
     NodePath t = n.find_net_tag("eid");
-    h.hit = true; h.point = e->get_surface_point(root.get_top()); h.t = (h.point - o).length();
-    if (!t.is_empty()) { h.eid = atoi(t.get_net_tag("eid").c_str()); return h; }
+    h.hit = true; h.node = n; h.point = pt; h.t = (pt - o).length();
+    h.normal = e->has_surface_normal() ? e->get_surface_normal(root.get_top()) : LVector3(0, 0, 1);
+    if (h.normal.dot(d) > 0) h.normal = -h.normal;   // face the ray
+    h.normal.normalize();
+    if (!t.is_empty()) h.eid = atoi(t.get_net_tag("eid").c_str());
     return h;
   }
   return h;
+}
+
+PickHit castRay(NodePath root, const LPoint3 &o, const LVector3 &d, float maxDist) {
+  return castRaySkip(root, o, d, maxDist, NodePath());
+}
+
+PickHit pick(const View &v, float px, float py, NodePath root, NodePath skip) {
+  PickHit h; LPoint3 o; LVector3 d;
+  if (!v.ray(px, py, o, d)) return h;
+  return castRaySkip(root, o, d, 1e9f, skip);
 }
 
 }  // namespace render

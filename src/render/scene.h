@@ -52,5 +52,8 @@ class Scene {
 NodePath makeMarker(const LColor &c, float size);
 // Appearance Override host playground: zone default, or the area picked in View > Context.
 std::string hostDnaRelFor(const dna::Document &doc);
-void setHostDnaOverride(const std::string &rel);   // small octahedron, unlit
+void setHostDnaOverride(const std::string &rel);
+// Heal (treasure) spawns are drawn with the game's treasure model. Pass the opened override file name:
+// "*halloween*" swaps TT treasures to the Halloween candy bucket (TreasureGlobals.getTreasureModel). "" = none.
+void setTreasureHolidayFromFile(const std::string &fileName);   // small octahedron, unlit
 }  // namespace render

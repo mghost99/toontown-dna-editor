@@ -9,7 +9,7 @@ namespace ui {
 
 void applyTheme(float scale = 1.0f);   // modern dark theme + Noto Sans / Inter if present
 
-struct PaletteState { char filter[128] = ""; int rootFilter = 0; int selected = -1; std::vector<int> visible; std::string lastFilter = "\x01"; int lastRoot = -1; };
+struct PaletteState { char filter[128] = ""; int rootFilter = 0; int selected = -1; std::vector<int> visible; std::string lastFilter = "\x01"; int lastRoot = -1; int doubleClicked = -1; };
 // Returns the catalog index the user clicked this frame (-1 none).
 int palettePanel(const std::vector<dna::CatalogEntry> &cat, PaletteState &st, const std::set<std::string> &loadedCodes);
 

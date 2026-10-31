@@ -14,6 +14,7 @@
 
 class Editor {
  public:
+  friend int main(int, char **);   // scripted offscreen tests
   Editor(platform::App &app, std::string resRoot);
   bool open(const std::string &relOrAbs);
   bool save(const std::string &outDir = "");
@@ -45,7 +46,18 @@ class Editor {
   void setContextArea(const std::string &rel);
   const std::vector<std::string> &contextAreas() const { return ctxAreas_; }
   bool openPreview(int catIndex);
-  int placePreviewed();
+  int placePreviewed(const LPoint3 *at = nullptr, const dna::Xform *full = nullptr);
+  // Wall-mount surface snap (banners, swags, drapes, bows): flush on a flat face, sized between its edges/pillars.
+  bool isWallMount(const std::string &code) const;
+  bool wallSnap(const render::PickHit &h, dna::Xform &out, std::string *why = nullptr);
+  // Appearance Override: rewrite parent_code (ATTACH-TO-MODEL) props as plain world-space props
+  // with the same rendered world pos/hpr/scale. Saves twice (transforms, then attribute strip). Returns count.
+  int convertAttachToWorld(std::string *log = nullptr);
+  bool wallSnapOn = true; NodePath snapRoot;   // empty = whole scene
+  NodePath hostProp(const std::string &code);   // doc item, attach-parent holder, or playground-context copy   // View menu toggle; Alt disables while dragging   // at: world point (else the view-centre ground hit)
+  int placeCatalog(int ci, const LPoint3 *at = nullptr);
+  void paletteDropTarget(render::View &v);
+  int dropCatalog(int ci, render::View &v, float px, float py);   // drag-drop: ground/surface under the pixel
   void setLight(render::LightMode m);
   void frameAll(); void frameSelection();
   int  pickAt3D(float px, float py);
@@ -67,7 +79,12 @@ class Editor {
   bool forceViews = false;
   bool invertCamera_ = true;   // grab-the-world default; View > Invert camera
   bool invertCameraY_ = true;  // pitch/pan Y (same default)
-  float wheelSpeed = 1.5f;
+  float wheelSpeed = 1.5f;   // minimum wheel step (ft per notch); grows with distance to the cursor point
+  float lastWheelBase_ = 0;  // step per notch used by the last wheel zoom (selftest)
+  // 3D wheel zoom toward the cursor: step scales with distance to the surface under the cursor
+  // (else height above ground). fast = Alt (x5), fine = Shift (x0.2, when nothing is selected).
+  float wheelZoom(float px, float py, float wheel, bool fast, bool fine);
+  bool focusCursor(float px, float py);   // F with nothing selected: frame the point under the cursor
  private:
   platform::App &app_;
   assets::Storage storage_;
@@ -75,7 +92,7 @@ class Editor {
   NodePath previewRoot_, previewModel_;
   std::vector<PT(AnimControl)> previewAnimations_;
   std::string previewAnimation_;
-  int previewIdx_ = -1; LVecBase3 previewSize_; int previewTris_ = 0; float pvYaw_ = 35, pvPitch_ = 20, pvZoom_ = 1;
+  int previewIdx_ = -1; LVecBase3 previewSize_; LPoint3 previewMin_, previewMax_; NodePath dropGhost_; int dropGhostFrame_ = -1; int previewTris_ = 0; float pvYaw_ = 35, pvPitch_ = 20, pvZoom_ = 1;
   ui::PaletteState pal_; ui::OutlinerState out_;
   bool showInputDebug_ = getenv("DNAED_INPUT_DEBUG") != nullptr; std::string hoveredView_ = "none";
   bool logAuto_ = true, showOpen_ = false, showHelp_ = false, layoutDone_ = false, showDemo_ = false;
@@ -87,6 +104,7 @@ class Editor {
   bool orbiting_ = false;
   LPoint3 walkerCameraTarget_;
   float walkerCameraDist_ = 0, walkerCameraYaw_ = 0, walkerCameraPitch_ = 0;
+  int lastView_ = 3;     // view last clicked (2 = 2D Map, 3 = 3D View); "Place in scene" uses its centre
   int pointerView_ = 0;   // 2 or 3 while a mouse button is held; the other view ignores that drag
   bool rotDrag_ = false; float rotAccum_ = 0; std::vector<float> rotStartH_;   // Shift+left-drag yaw
   bool wheelUsed_ = false;   // wheel consumed by a drag (yaw) this frame
@@ -112,6 +130,14 @@ class Editor {
   bool injectOverrideOp(const std::string &tag, const std::string &code,
                         const std::string &extraAttrs = "");
   bool setOverrideGate(const std::string &gate, const std::string &holidays);
+  void applyContextOverride();   // preview hide/replace/recolor entries on the view-only playground (game parity)
+  bool editOverrideText(const std::string &newText, const std::string &label);   // one undo step, re-previews
+  bool replaceBaseWithCatalog(int ctxIdx, int ci);
+  bool removeOverrideOpsFor(const std::string &code);
+  std::vector<NodePath> ctxOvAdded_, ctxOvStashed_, ctxOvRecolored_;
+  int ovBase_ = -1, ovSwaps_ = 0, ovHidden_ = 0, ovRecolors_ = 0;
+  void rebuildNpcMarkers();   // view-only labels at npc_origin_N / party_person_* (names from NPCToons.py), never saved
+  bool showNpcs_ = true; NodePath npcRoot_; int npcCount_ = 0; std::vector<std::string> npcLabels_, npcUnused_; bool showUnusedNpcs_ = false;
   bool newAppearanceOverride();
   // encrypted .pdna: modal password prompt (password kept in memory only, never logged/saved)
   bool showPw_ = false; std::string pwFile_, pwMsg_; char pwBuf_[256] = {0};

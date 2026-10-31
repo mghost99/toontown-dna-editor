@@ -72,7 +72,15 @@ int palettePanel(const std::vector<dna::CatalogEntry> &cat, PaletteState &st, co
       int i = st.visible[r]; auto &e = cat[i];
       ImGui::PushID(i);
       bool here = loaded.count(e.code) > 0;
-      if (ImGui::Selectable("##s", st.selected == i, 0, ImVec2(0, 0))) { st.selected = i; clicked = i; }
+      if (ImGui::Selectable("##s", st.selected == i, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0, 0))) {
+        st.selected = i; clicked = i;
+        if (ImGui::IsMouseDoubleClicked(0)) st.doubleClicked = i;   // double-click: place at the view centre
+      }
+      if (ImGui::BeginDragDropSource()) {   // drag into the 3D View or 2D Map to place under the mouse
+        ImGui::SetDragDropPayload("DNA_PALETTE_PROP", &i, sizeof i);
+        ImGui::Text("Place %s", e.code.c_str());
+        ImGui::EndDragDropSource();
+      }
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\nmodel: %s\nstorage: %s", e.code.c_str(), e.model.c_str(), e.storageRel.c_str());
       ImGui::SameLine(0, 0);
       ImGui::TextColored(here ? ImVec4(0.55f, 0.85f, 0.6f, 1) : ImVec4(0.45f, 0.48f, 0.55f, 1), here ? "\xE2\x97\x8F " : "\xE2\x97\x8B ");
@@ -373,8 +381,8 @@ void helpPanel() {
     {"X", "Toggle snapping."}, {"Alt (hold)", "While dragging the gizmo or selection, temporarily bypass snap so props can overlap the host (e.g. cobwebs)."},
     {"Arrow keys", "Nudge the selection."}, {"Ctrl + D / Delete", "Duplicate or delete the selection."}});
   section("Camera", {{"Right drag", "Look around from the camera's current position."},
-    {"Middle drag", "Pan. Shift + right drag also pans."}, {"Wheel", "Zoom the camera (3D or 2D map). Hold Shift for fine steps when nothing is selected."},
-    {"View > Camera speed", "Set and save the wheel speed."}, {"F / Home", "Frame the selection or the whole map."}, {"L", "Cycle the lighting."}});
+    {"Middle drag", "Pan. Shift + right drag also pans."}, {"Wheel", "Zoom toward the cursor. In 3D the step grows with distance to what is under the cursor (fast when high up, fine up close). Shift = fine (nothing selected)."}, {"Alt + wheel", "3D zoom 5x faster."},
+    {"View > Camera speed", "Set and save the wheel speed."}, {"F", "Frame the selection; with nothing selected, jump to the point under the cursor in 3D."}, {"Home", "Frame the whole map."}, {"L", "Cycle the lighting."}});
   section("Selection + mouse wheel", {
     {"Shift + wheel", "Scale the selection uniformly (~5% per notch). Clamped above 0.01. Camera does not zoom."},
     {"Ctrl + wheel", "Rotate heading by the snap angle (15° with Snap on, else ~5°). Camera does not zoom."},

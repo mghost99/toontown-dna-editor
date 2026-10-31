@@ -1,3 +1,4 @@
+#include "dna/sign_fonts.h"
 #include "editor.h"
 #include "core/log.h"
 #include "core/resconfig.h"
@@ -156,6 +157,8 @@ void Editor::rebuildScene() {
   detachContext();
   scene.build(doc, storage_);
   attachContext();
+  applyContextOverride();
+  rebuildNpcMarkers();
   for (int i = 0; i < (int)doc.items.size(); ++i) {
     if (doc.items[i].origId < 0) scene.buildAdded(doc, i, storage_);
     scene.syncItem(doc, i);
@@ -291,12 +294,27 @@ void Editor::deleteSelected() {
   selection.clear();
 }
 
+// Where "Place in scene" puts a new prop (world coordinates):
+//  - next to the selected prop (offset by both widths), if one is selected;
+//  - else the centre of the last-used view: the 2D Map's centre, or the 3D View centre ray hit on
+//    scene geometry, or that ray on the z=0 ground plane, or the 3D orbit target.
 LPoint3 Editor::placementPoint() {
+  if (selection.size() == 1 && selection[0] >= 0 && selection[0] < (int)scene.itemNodes.size() && !scene.itemNodes[selection[0]].is_empty()) {
+    NodePath sel = scene.itemNodes[selection[0]];
+    LPoint3 a, b, p = sel.get_pos(scene.geom);
+    float selW = sel.calc_tight_bounds(a, b, scene.geom) ? std::max(b[0] - a[0], b[1] - a[1]) : 2.f;
+    float newW = std::max(previewSize_[0], previewSize_[1]);
+    p[0] += selW * 0.5f + newW * 0.5f + 1.f;
+    return p;
+  }
+  if (lastView_ == 2 && v2) { LPoint3 c = v2->target; c[2] = 0; return c; }
   render::Rect r = v3->rect();
-  render::PickHit h = render::pick(*v3, r.x + r.w / 2, r.y + r.h / 2, scene.geom);
-  if (h.hit) return h.point;
-  LPoint3 o, p; LVector3 d;
-  if (v3->ray(r.x + r.w / 2, r.y + r.h / 2, o, d) && render::rayPlaneZ(o, d, 0, p)) return p;
+  if (r.w > 1 && r.h > 1) {
+    render::PickHit h = render::pick(*v3, r.x + r.w / 2, r.y + r.h / 2, scene.geom);
+    if (h.hit) return h.point;
+    LPoint3 o, p; LVector3 d;
+    if (v3->ray(r.x + r.w / 2, r.y + r.h / 2, o, d) && render::rayPlaneZ(o, d, 0, p) && (p - v3->target).length() < 5000) return p;
+  }
   return v3->target;
 }
 
@@ -319,7 +337,7 @@ bool Editor::openPreview(int ci) {
   previewModel_.set_pos_hpr_scale(0, 0, 0, 0, 0, 0, 1, 1, 1);
   LPoint3 mn, mx;
   if (!previewModel_.calc_tight_bounds(mn, mx)) mn = mx = LPoint3(0);
-  previewSize_ = mx - mn;
+  previewSize_ = mx - mn; previewMin_ = mn; previewMax_ = mx;
   previewTris_ = 0;
   NodePathCollection gs = previewModel_.find_all_matches("**/+GeomNode");
   for (int gi = 0; gi < gs.get_num_paths(); gi++) { NodePath g = gs.get_path(gi);
@@ -333,7 +351,159 @@ bool Editor::openPreview(int ci) {
   return true;
 }
 
-int Editor::placePreviewed() {
+void Editor::paletteDropTarget(render::View &v) {
+  if (!ImGui::BeginDragDropTarget()) return;
+  if (const ImGuiPayload *pl = ImGui::AcceptDragDropPayload("DNA_PALETTE_PROP", ImGuiDragDropFlags_AcceptBeforeDelivery)) {
+    int ci = *(const int *)pl->Data;
+    ImVec2 m = ImGui::GetIO().MousePos;
+    if (pl->IsDelivery()) {
+      if (!dropGhost_.is_empty()) dropGhost_.hide();
+      if (dropCatalog(ci, v, m.x, m.y) < 0) core::warn("drop: no ground under the mouse");
+      lastView_ = &v == v2.get() ? 2 : 3;
+    } else if (&v == v3.get()) {   // ghost preview while hovering
+      if (previewIdx_ != ci) openPreview(ci);
+      if (dropGhost_.is_empty()) dropGhost_ = scene.world.attach_new_node("drop_ghost");
+      if (dropGhost_.get_num_children() == 0 || dropGhost_.get_tag("code") != catalog[ci].code) {
+        dropGhost_.get_children().detach();
+        previewModel_.copy_to(dropGhost_); dropGhost_.set_tag("code", catalog[ci].code);
+        dropGhost_.set_transparency(TransparencyAttrib::M_alpha); dropGhost_.set_alpha_scale(0.55f);
+        dropGhost_.set_collide_mask(CollideMask::all_off());
+      }
+      render::PickHit h = render::pick(v, m.x, m.y, scene.geom, dropGhost_);
+      dna::Xform xf; bool snapped = wallSnapOn && !ImGui::GetIO().KeyAlt && isWallMount(catalog[ci].code) && wallSnap(h, xf);
+      if (snapped) dropGhost_.set_pos_hpr_scale(xf.x, xf.y, xf.z, xf.h, xf.p, xf.r, xf.sx, xf.sy, xf.sz);
+      else if (h.hit) dropGhost_.set_pos_hpr_scale(h.point, LVecBase3(0), LVecBase3(1));
+      dropGhost_.show(); dropGhostFrame_ = ImGui::GetFrameCount();
+      ImGui::SetTooltip(snapped ? "Snaps to this face (hold Alt to place freely)" : "Release to place here");
+    }
+  }
+  ImGui::EndDragDropTarget();
+}
+
+int Editor::placeCatalog(int ci, const LPoint3 *at) {
+  if (ci < 0 || ci >= (int)catalog.size()) return -1;
+  if (previewIdx_ != ci) openPreview(ci);
+  return placePreviewed(at);
+}
+
+static std::string attrOfFirstTag(const std::string &xml, const std::string &a);
+static std::string dropAttrsOfFirstTag(std::string xml, std::initializer_list<const char *> names);
+
+int Editor::convertAttachToWorld(std::string *log) {
+  if (!isAppearanceOverride()) return 0;
+  int n = 0; char b[300];
+  for (size_t i = 0; i < doc.items.size() && i < scene.itemNodes.size(); i++) {
+    auto &it = doc.items[i];
+    std::string pc = it.node ? it.node->attr("parent_code") : attrOfFirstTag(it.templateXml, "parent_code");
+    if (pc.empty() || it.deleted || scene.itemNodes[i].is_empty()) continue;
+    NodePath np = scene.itemNodes[i];
+    LPoint3 p = np.get_pos(scene.geom); LVecBase3 h = np.get_hpr(scene.geom), s = np.get_scale(scene.geom);
+    dna::Xform x = it.xf;
+    x.x = p[0]; x.y = p[1]; x.z = p[2]; x.h = h[0]; x.p = h[1]; x.r = h[2]; x.sx = s[0]; x.sy = s[1]; x.sz = s[2];
+    snprintf(b, sizeof b, "convert %s: local (%.2f,%.2f,%.2f / %.1f,%.1f,%.1f / %.2f) under %s -> world (%.2f,%.2f,%.2f / %.1f,%.1f,%.1f / %.2f,%.2f,%.2f)\n",
+             it.name.c_str(), it.xf.x, it.xf.y, it.xf.z, it.xf.h, it.xf.p, it.xf.r, it.xf.sx, pc.c_str(), x.x, x.y, x.z, x.h, x.p, x.r, x.sx, x.sy, x.sz);
+    if (log) *log += b;
+    if (it.origId < 0) it.templateXml = dropAttrsOfFirstTag(it.templateXml, {"parent_code", "parent_node"});
+    it.xf = x; n++;
+  }
+  if (!n) return 0;
+  std::string path = doc.path;
+  if (!save("")) return -1;
+  open(path);
+  std::string t = doc.text;
+  // only inside <prop ...> start tags
+  std::regex propTag("<prop\\b[^>]*>"); std::string out; auto it0 = t.cbegin();
+  for (std::sregex_iterator m(t.begin(), t.end(), propTag), e; m != e; ++m) {
+    out.append(it0, t.cbegin() + m->position());
+    out += std::regex_replace(m->str(), std::regex("\\s(parent_code|parent_node)=\"[^\"]*\""), "");
+    it0 = t.cbegin() + m->position() + m->length();
+  }
+  out.append(it0, t.cend());
+  out = std::regex_replace(out, std::regex("Gazebo static props: <prop>\\s*\\(ATTACH-TO-MODEL; pos/hpr/scale local to gazebo\\)\\."),
+                           "Gazebo props: plain world-space <prop> (zone coordinates).");
+  doc.replaceSource(0, doc.text.size(), out); doc.textDirty = true;
+  if (!save("")) return -1;
+  open(path);
+  return n;
+}
+
+NodePath Editor::hostProp(const std::string &code) {
+  for (size_t i = 0; i < doc.items.size() && i < scene.itemNodes.size(); i++) if (doc.items[i].code == code) return scene.itemNodes[i];
+  NodePath a = scene.attachParent(code); if (!a.is_empty()) return a;
+  if (ctxBuilt_) for (size_t i = 0; i < ctxDoc_.items.size() && i < ctxScene_.itemNodes.size(); i++)
+    if (ctxDoc_.items[i].code == code && !ctxScene_.itemNodes[i].is_stashed()) return ctxScene_.itemNodes[i];
+  return NodePath();
+}
+
+bool Editor::isWallMount(const std::string &code) const {
+  std::string c = code; for (auto &ch : c) ch = (char)tolower(ch);
+  for (auto k : {"banner", "swag", "drape", "bunting"}) if (c.find(k) != std::string::npos) return true;
+  return false;
+}
+
+// Snap the previewed prop flush onto the flat face hit by h:
+//  - face direction = hit normal (must be near-vertical, i.e. a wall-like face, tilt allowed to 35 deg)
+//  - span: step along the face tangent casting into the face; the face ends where the depth jumps
+//    (a protruding pillar or an edge/miss). Prop is centred in the span and scaled uniformly to fit.
+//  - top: same stepping upwards; the prop hangs just below the top edge.
+//  - heading turns the model's front (-Y) to face out of the wall; pitch follows the face tilt.
+bool Editor::wallSnap(const render::PickHit &h, dna::Xform &out, std::string *why) {
+  auto fail = [&](const char *m) { if (why) *why = m; return false; };
+  if (!h.hit) return fail("no surface");
+  LVector3 n = h.normal; n.normalize();
+  if (std::fabs(n[2]) > 0.57f) return fail("not a wall-like face");
+  LVector3 nh(n[0], n[1], 0); nh.normalize();
+  LVector3 t(-nh[1], nh[0], 0);
+  const float probe = 1.0f, maxSpan = 40.f, step = 0.2f;
+  float baseDepth = probe;   // distance from probe point back to the face at the hit
+  auto depthAt = [&](const LPoint3 &onFace) -> float {
+    render::PickHit r = render::castRay(snapRoot.is_empty() ? scene.geom : snapRoot, onFace + n * probe, -n, probe * 4);
+    return r.hit ? r.t : -1.f;
+  };
+  auto extent = [&](const LVector3 &dir) -> float {
+    float s = step;
+    for (; s < maxSpan; s += step) {
+      float d = depthAt(h.point + dir * s);
+      if (d < 0 || std::fabs(d - baseDepth) > 0.25f) break;
+    }
+    return s - step;
+  };
+  baseDepth = depthAt(h.point); if (baseDepth < 0) return fail("face lost");
+  // face plane may be tilted: walk along the face, not the horizontal tangent
+  LVector3 up = n.cross(t); up.normalize(); if (up[2] < 0) up = -up;
+  float left = extent(-t), right = extent(t), top = extent(up);
+  float width = left + right;
+  if (width < 0.5f) return fail("face too narrow");
+  LPoint3 c = h.point + t * ((right - left) * 0.5f);
+  float sizeX = std::max(0.01f, (float)previewSize_[0]);
+  float s = std::min(4.f, std::max(0.2f, width * 0.96f / sizeX));
+  LPoint3 topPt = c + up * top;
+  float hDeg = std::atan2(nh[0], -nh[1]) * 180.f / float(M_PI);
+  float pDeg = -std::asin(std::max(-1.f, std::min(1.f, (float)n[2]))) * 180.f / float(M_PI);
+  // model local: front -Y, back +Y; hang from the top edge, back flush to the face
+  LPoint3 pos = topPt - up * (s * (float)previewMax_[2] + 0.1f) + n * (s * (float)previewMax_[1] + 0.05f);
+  out = dna::Xform{}; out.x = pos[0]; out.y = pos[1]; out.z = pos[2]; out.h = hDeg; out.p = pDeg; out.r = 0;
+  out.sx = out.sy = out.sz = s;
+  if (why) { char b[200]; snprintf(b, sizeof b, "span %.2f (L %.2f R %.2f) top %.2f normal (%.2f,%.2f,%.2f)", width, left, right, top, n[0], n[1], n[2]); *why = b; }
+  return true;
+}
+
+int Editor::dropCatalog(int ci, render::View &v, float px, float py) {
+  if (ci < 0 || ci >= (int)catalog.size()) return -1;
+  if (previewIdx_ != ci) openPreview(ci);
+  render::PickHit h = render::pick(v, px, py, scene.geom, dropGhost_);
+  if (&v == v3.get() && wallSnapOn && !ImGui::GetIO().KeyAlt && isWallMount(catalog[ci].code)) {
+    dna::Xform xf; std::string why;
+    if (wallSnap(h, xf, &why)) { core::info("surface snap " + catalog[ci].code + ": " + why); return placePreviewed(nullptr, &xf); }
+    core::info("surface snap skipped (" + why + "): placing on the surface point");
+  }
+  LPoint3 p;
+  if (h.hit) p = h.point;
+  else { LPoint3 o; LVector3 d; if (!v.ray(px, py, o, d) || !render::rayPlaneZ(o, d, 0, p)) return -1; }
+  return placeCatalog(ci, &p);
+}
+
+int Editor::placePreviewed(const LPoint3 *at, const dna::Xform *full) {
   if (previewIdx_ < 0 || doc.path.empty()) return -1;
   auto &e = catalog[previewIdx_];
   // Appearance Override ADDs carry model= so the game can load the BAM even when the
@@ -348,21 +518,19 @@ int Editor::placePreviewed() {
     core::warn("placed " + e.code + " as a plain prop: its animations are embedded in the model, so no anim name is written");
   dna::Item it; it.kind = previewAnimation_.empty() ? "prop" : (e.root == "interactive_prop" ? "interactive_prop" : "anim_prop");
   it.code = e.code; it.name = e.code;
+  { // unique name, so the Objects list / Inspector never confuse two copies of the same prop
+    auto taken = [&](const std::string &n) { for (auto &o : doc.items) if (!o.deleted && o.name == n) return true; return false; };
+    for (int k = 2; taken(it.name); k++) it.name = e.code + "_" + std::to_string(k);
+  }
   it.visgroup = !selection.empty() ? doc.items[selection[0]].visgroup : (doc.visgroups.empty() ? "" : doc.visgroups[0]);
-  it.templateXml = "<" + it.kind + " name=\"" + e.code + "\" code=\"" + e.code + "\"";
+  it.templateXml = "<" + it.kind + " name=\"" + it.name + "\" code=\"" + e.code + "\"";
   if (ovModel) it.templateXml += " model=\"" + e.model + "\"";
   if (!previewAnimation_.empty()) it.templateXml += " anim=\"" + previewAnimation_ + "\"";
   if (it.kind == "interactive_prop") it.templateXml += " cell_id=\"0\"";
-  // ATTACH-TO-MODEL: when editing an Appearance Override, stamp parent_code so the
-  // game parents this ADD to the named DNA prop (pos/hpr/scale stay local).
-  if (isAppearanceOverride() && ovParentCode_[0]) {
-    it.templateXml += " parent_code=\"" + std::string(ovParentCode_) + "\"";
-    if (ovParentNode_[0])
-      it.templateXml += " parent_node=\"" + std::string(ovParentNode_) + "\"";
-  }
   it.templateXml += ">\n\t<pos x=\"0.00\" y=\"0.00\" z=\"0.00\" />\n\t<nhpr h=\"0.00\" p=\"0.00\" r=\"0.00\" />\n</" + it.kind + ">";
-  LPoint3 p = placementPoint();
+  LPoint3 p = at ? *at : placementPoint();
   it.xf.x = snapv(p[0]); it.xf.y = snapv(p[1]); it.xf.z = p[2];
+  if (full) it.xf = *full;   // surface snap: exact pose, no grid snap
   doc.items.push_back(it); int id = (int)doc.items.size() - 1;
   scene.buildAdded(doc, id, storage_);
   auto c = std::make_unique<commands::DeleteCmd>(); c->ids = {id}; c->add = true; history.pushApplied(std::move(c));
@@ -373,6 +541,30 @@ int Editor::placePreviewed() {
 
 void Editor::setLight(render::LightMode m) { light_.set(m, v3.get(), v2.get()); }
 void Editor::frameAll() { scene.computeBounds(); v3->frame(scene.boundsMin, scene.boundsMax); v2->frame(scene.boundsMin, scene.boundsMax); }
+float Editor::wheelZoom(float px, float py, float wheel, bool fast, bool fine) {
+  LPoint3 o; LVector3 d;
+  if (!v3->ray(px, py, o, d)) { o = v3->cam.get_pos(scene.world); d = scene.world.get_relative_vector(v3->cam, LVector3(0, 1, 0)); }
+  d.normalize();
+  render::PickHit h = render::pick(*v3, px, py, scene.geom);
+  float dist = h.hit ? h.t : std::max(1.f, std::fabs((float)o[2] - (float)scene.boundsMin[2]));
+  float base = std::max(wheelSpeed, dist * 0.15f);
+  float step = wheel * base * (fast ? 5.f : fine ? 0.2f : 1.f);
+  if (step > 0 && h.hit) step = std::min(step, h.t * 0.85f);   // never fly through the surface
+  lastWheelBase_ = base;
+  v3->target += d * step;
+  return step;
+}
+
+bool Editor::focusCursor(float px, float py) {
+  render::PickHit h = render::pick(*v3, px, py, scene.geom);
+  LPoint3 p;
+  if (h.hit) p = h.point;
+  else { LPoint3 o; LVector3 d; if (!v3->ray(px, py, o, d) || !render::rayPlaneZ(o, d, 0, p)) return false; }
+  v3->target = p; v3->dist = 25; v3->apply();
+  v2->target = p; v2->apply();
+  return true;
+}
+
 void Editor::frameSelection() {
   if (selection.empty()) { frameAll(); return; }
   LPoint3 mn(1e9), mx(-1e9); NodePath top = scene.world;
@@ -497,7 +689,15 @@ bool Editor::handleDrag(render::View &v, bool topDown, bool hovered) {
         LPoint3 o; LVector3 d; dragLast_ = h.point;
         if (v.ray(mp.x, mp.y, o, d)) render::rayPlaneZ(o, d, dragZ_, dragLast_);
       }
-    } else if (!io.KeyCtrl) selection.clear();
+    } else {
+      ovBase_ = -1;
+      if (!topDown && ctxBuilt_ && isAppearanceOverride()) {   // base-DNA (playground) prop: pick for Replace / Hide
+        render::PickHit c = render::pick(v, mp.x, mp.y, ctxScene_.geom);
+        NodePath tg = c.node.is_empty() ? NodePath() : c.node.find_net_tag("ctxi");
+        if (!tg.is_empty()) { ovBase_ = atoi(tg.get_net_tag("ctxi").c_str()); if (ovBase_ >= 0 && ovBase_ < (int)ctxDoc_.items.size()) core::info("base prop " + ctxDoc_.items[ovBase_].code + ": Replace / Hide / Restore in the Appearance Override panel"); }
+      }
+      if (!io.KeyCtrl) selection.clear();
+    }
     core::setTiming("select (click -> selected)", core::nowMs() - t0);
   }
   int myView = topDown ? 2 : 3;
@@ -585,6 +785,7 @@ void Editor::viewport3D() {
   bool hovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(p, ImVec2(p.x + s.x, p.y + s.y));
   if (hovered) hoveredView_ = "3D";
   ImGui::Dummy(s);
+  paletteDropTarget(*v3);
   ImGuiIO &io = ImGui::GetIO();
   if (walker.active()) {
     bool input = (hovered || ImGui::IsWindowFocused()) && !io.WantTextInput && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
@@ -599,6 +800,7 @@ void Editor::viewport3D() {
   bool clicked = ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1) || ImGui::IsMouseClicked(2);
   if (!down) { if (pointerView_ == 3) pointerView_ = 0; }
   else if (clicked && hovered && pointerView_ == 0) pointerView_ = 3;
+  if (clicked && hovered) lastView_ = 3;
   bool own = pointerView_ == 3;
   // gizmo first (it owns the mouse when hovered)
   bool gizmoHover = false, using_ = false;
@@ -631,8 +833,7 @@ void Editor::viewport3D() {
       // Fractional touchpad input stays fractional. Speed is independent of the
       // map's size or the distance retained from the last Frame All operation.
       // Fine zoom (Shift) only when nothing is selected (selection wheel owns Shift).
-      float step = io.MouseWheel * wheelSpeed * (io.KeyShift ? 0.2f : 1.f);
-      v3->target += viewFwd() * step;
+      wheelZoom(io.MousePos.x, io.MousePos.y, io.MouseWheel, io.KeyAlt, io.KeyShift);
     }
   }
   bool pan = own && (ImGui::IsMouseDown(2) || (ImGui::IsMouseDown(1) && io.KeyShift));
@@ -659,7 +860,7 @@ void Editor::viewport3D() {
   ImDrawList *dl = ImGui::GetWindowDrawList();
   const char *ops[] = {"Q drag", "W move", "E rotate", "R scale"};
   const char *snapHud = !snap.on ? "off" : (io.KeyAlt ? "bypass (Alt)" : "on");
-  std::string hud = fmt("%s   |   snap %s (X)   |   %s   |   %.1f ms/frame", ops[(int)gizmoOp], snapHud,
+  std::string hud = fmt("%s   |   snap %s (X)   |   wheel zoom, Alt fast, F focus   |   %s   |   %.1f ms/frame", ops[(int)gizmoOp], snapHud,
                         light_.mode == render::LightMode::Game ? "Game light" : light_.mode == render::LightMode::Lit ? "Lit" : "Cog mood", lastFrameMs);
   dl->AddRectFilled(ImVec2(p.x + 8, p.y + 8), ImVec2(p.x + 16 + ImGui::CalcTextSize(hud.c_str()).x, p.y + 32), IM_COL32(15, 16, 20, 190), 5);
   dl->AddText(ImVec2(p.x + 12, p.y + 12), IM_COL32(220, 225, 235, 255), hud.c_str());
@@ -682,11 +883,13 @@ void Editor::viewport2D() {
   bool hovered = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(p, ImVec2(p.x + s.x, p.y + s.y));
   if (hovered) hoveredView_ = "2D";
   ImGui::Dummy(s);
+  paletteDropTarget(*v2);
   ImGuiIO &io = ImGui::GetIO();
   bool down = ImGui::IsMouseDown(0) || ImGui::IsMouseDown(1) || ImGui::IsMouseDown(2);
   bool clicked = ImGui::IsMouseClicked(0) || ImGui::IsMouseClicked(1) || ImGui::IsMouseClicked(2);
   if (!down) { if (pointerView_ == 2) pointerView_ = 0; }
   else if (clicked && hovered && pointerView_ == 0) pointerView_ = 2;
+  if (clicked && hovered) lastView_ = 2;
   bool own = pointerView_ == 2;
   handleDrag(*v2, true, own || (hovered && pointerView_ == 0));
   if ((own || (hovered && pointerView_ == 0)) && io.MouseWheel != 0 && !wheelUsed_) {
@@ -792,13 +995,235 @@ bool Editor::isAppearanceOverride() const {
   return doc.text.find("appearance_override") != std::string::npos;
 }
 
+bool Editor::editOverrideText(const std::string &newText, const std::string &label) {
+  auto c = std::make_unique<commands::SourceCmd>(); c->before = doc.text; c->beforeDirty = doc.textDirty; c->what = label;
+  if (!doc.replaceSource(0, doc.text.size(), newText)) { core::warn("override edit failed to parse: " + label); return false; }
+  c->after = doc.text; doc.textDirty = true; overrideDirty_ = true;
+  history.pushApplied(std::move(c));
+  selection.clear(); rebuildScene();
+  return true;
+}
+
+static std::string ovAttr(const std::string &s, const char *k) {
+  std::smatch m;
+  if (std::regex_search(s, m, std::regex(std::string("(^|\\s)") + k + "\\s*=\\s*\"([^\"]*)\""))) return m[2].str();
+  return "";
+}
+// [start,end) ranges of <!-- --> comments, so commented-out entries are ignored like the game's XML parser does
+static std::vector<std::pair<size_t, size_t>> ovComments(const std::string &t) {
+  std::vector<std::pair<size_t, size_t>> r;
+  for (size_t p = 0; (p = t.find("<!--", p)) != std::string::npos;) { size_t e = t.find("-->", p); e = e == std::string::npos ? t.size() : e + 3; r.push_back({p, e}); p = e; }
+  return r;
+}
+static bool ovInComment(const std::vector<std::pair<size_t, size_t>> &r, size_t p) { for (auto &c : r) if (p >= c.first && p < c.second) return true; return false; }
+
+void Editor::applyContextOverride() {
+  for (auto &n : ctxOvAdded_) if (!n.is_empty()) n.remove_node();
+  for (auto &n : ctxOvStashed_) if (!n.is_empty()) n.unstash();
+  for (auto &n : ctxOvRecolored_) if (!n.is_empty()) n.clear_color_scale();
+  ctxOvAdded_.clear(); ctxOvStashed_.clear(); ctxOvRecolored_.clear(); ovSwaps_ = ovHidden_ = ovRecolors_ = 0;
+  if (!ctxBuilt_ || !isAppearanceOverride() || doc.text.empty()) return;
+  static std::string holRoot; static assets::Storage hol;   // holiday catalog (legacy HolidayDecorator storages)
+  if (holRoot != resRoot) {
+    holRoot = resRoot; hol.clear(); std::vector<std::string> files; std::error_code ec;
+    for (auto &f : fs::directory_iterator(fs::path(resRoot) / "phase_4/dna", ec)) {
+      std::string n = f.path().filename().string();
+      if (n.find("halloween_props_storage") != std::string::npos) files.push_back("phase_4/dna/" + n);
+    }
+    std::sort(files.begin(), files.end()); hol.addFiles(files);
+  }
+  const std::string &t = doc.text; auto com = ovComments(t);
+  std::regex el("<(hide|replace|recolor)\\b([^>]*?)/?>");
+  for (std::sregex_iterator it(t.begin(), t.end(), el), end; it != end; ++it) {
+    if (ovInComment(com, (size_t)it->position(0))) continue;
+    std::string tag = (*it)[1].str(), a = (*it)[2].str();
+    std::string code = ovAttr(a, "code"), find = ovAttr(a, "find");
+    if (code.empty() && find.rfind("**/=DNACode=", 0) == 0) code = find.substr(12);
+    if (code.empty()) continue;
+    std::vector<int> targets;
+    for (size_t i = 0; i < ctxDoc_.items.size() && i < ctxScene_.itemNodes.size(); i++)
+      if (ctxDoc_.items[i].code == code && !ctxScene_.itemNodes[i].is_empty() && !ctxScene_.itemNodes[i].is_stashed()) targets.push_back((int)i);
+    if (tag == "hide") { for (int i : targets) { ctxScene_.itemNodes[i].stash(); ctxOvStashed_.push_back(ctxScene_.itemNodes[i]); ovHidden_++; } continue; }
+    if (tag == "recolor") {
+      float c[4] = {1, 1, 1, 1}; std::string cs = ovAttr(a, "color_scale"); for (auto &ch : cs) if (ch == ',') ch = ' ';
+      if (sscanf(cs.c_str(), "%f %f %f %f", &c[0], &c[1], &c[2], &c[3]) != 4) continue;
+      for (int i : targets) { ctxScene_.itemNodes[i].set_color_scale(c[0], c[1], c[2], c[3]); ctxOvRecolored_.push_back(ctxScene_.itemNodes[i]); ovRecolors_++; }
+      continue;
+    }
+    // replace: explicit model[/node] > holiday catalog > hood storage > editor palette (same order as the game)
+    std::string with = ovAttr(a, "with_code"); if (with.empty()) with = code;
+    std::string model = ovAttr(a, "model"), node = ovAttr(a, "node");
+    NodePath src;
+    if (!model.empty()) src = assets::loadStoreNode(model, node);
+    if (src.is_empty() && hol.hasCode(with)) src = hol.findNode(with);
+    if (src.is_empty() && with != code && ctxStorage_.hasCode(with)) src = ctxStorage_.findNode(with);
+    if (src.is_empty() && with != code && storage_.hasCode(with)) src = storage_.findNode(with);
+    if (src.is_empty() && with != code) for (auto &e : catalog) if (e.code == with) { src = assets::loadStoreNode(e.model, e.node); break; }
+    if (src.is_empty()) { static std::set<std::string> warned; if (warned.insert(with).second) core::warn("override preview: no model for replace with_code " + with); continue; }
+    for (int i : targets) {
+      NodePath base = ctxScene_.itemNodes[i];
+      NodePath cp = src.copy_to(base.get_parent());
+      cp.set_transform(base.get_transform());
+      cp.set_name(with + " (override replace of " + code + ")");
+      cp.set_tag("ctxi", std::to_string(i));
+      base.stash(); ctxOvStashed_.push_back(base); ctxOvAdded_.push_back(cp); ovSwaps_++;
+    }
+  }
+}
+
+namespace render { NodePath makeMarker(const LColor &c, float s); }
+
+// NPCToons.py zone -> sorted npc ids (createNpcsInZone: posIndex i -> npc_origin_i), names from TTLocalizerEnglish.
+static std::map<int, std::string> g_npcType;   // npc id -> NPC_* type constant
+static void loadNpcTables(const std::string &resRoot, std::map<int, std::vector<int>> &zoneNpcs, std::map<int, std::string> &names) {
+  fs::path game = fs::path(resRoot).parent_path();
+  auto slurp = [](const fs::path &p) { std::ifstream f(p); return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>()); };
+  std::string npc = slurp(game / "toontown/toon/NPCToons.py");
+  size_t a = npc.find("NPCToonDict = {"), b = npc.find("zone2NpcDict", a == std::string::npos ? 0 : a);
+  if (a != std::string::npos) {
+    std::string body = npc.substr(a, b == std::string::npos ? std::string::npos : b - a);
+    std::regex re("\\n\\s*(\\d+):\\s*\\((\\d+),");
+    std::vector<std::pair<int, size_t>> starts;
+    for (std::sregex_iterator it(body.begin(), body.end(), re), end; it != end; ++it) { zoneNpcs[std::stoi((*it)[2])].push_back(std::stoi((*it)[1])); starts.push_back({std::stoi((*it)[1]), (size_t)it->position(0)}); }
+    std::regex ty("NPC_[A-Z]+");
+    for (size_t k = 0; k < starts.size(); k++) {
+      size_t e = k + 1 < starts.size() ? starts[k + 1].second : body.size();
+      std::string seg = body.substr(starts[k].second, e - starts[k].second); std::smatch m;
+      if (std::regex_search(seg, m, ty)) g_npcType[starts[k].first] = m.str(0);
+    }
+    for (auto &kv : zoneNpcs) std::sort(kv.second.begin(), kv.second.end());
+  }
+  std::string loc = slurp(game / "toontown/toonbase/TTLocalizerEnglish.py");
+  size_t c = loc.find("NPCToonNames = {");
+  if (c != std::string::npos) {
+    size_t d = loc.find("\n}", c); std::string body = loc.substr(c, d == std::string::npos ? std::string::npos : d - c);
+    std::regex re("\\n\\s*(\\d+):\\s*'((?:[^'\\\\]|\\\\.)*)'");
+    for (std::sregex_iterator it(body.begin(), body.end(), re), end; it != end; ++it) names[std::stoi((*it)[1])] = (*it)[2].str();
+    std::regex re2("\\n\\s*(\\d+):\\s*\"([^\"]*)\"");
+    for (std::sregex_iterator it(body.begin(), body.end(), re2), end; it != end; ++it) names.emplace(std::stoi((*it)[1]), (*it)[2].str());
+  }
+}
+
+void Editor::rebuildNpcMarkers() {
+  if (!npcRoot_.is_empty()) npcRoot_.remove_node();
+  npcCount_ = 0; npcLabels_.clear(); npcUnused_.clear();
+  if (!showNpcs_) return;
+  NodePath host = ctxBuilt_ && !ctxScene_.geom.is_empty() ? ctxScene_.geom : scene.geom;
+  if (host.is_empty()) return;
+  static std::string tabRoot; static std::map<int, std::vector<int>> zoneNpcs; static std::map<int, std::string> names;
+  if (tabRoot != resRoot) { tabRoot = resRoot; zoneNpcs.clear(); names.clear(); loadNpcTables(resRoot, zoneNpcs, names); }
+  int zone = 0; { std::smatch m; if (std::regex_search(doc.text, m, std::regex("zone=\"(\\d+)\""))) zone = std::stoi(m[1]); }
+  if (!zone) {
+    static const std::pair<const char *, int> hoods[] = {{"toontown_central", 2000}, {"donalds_dock", 1000}, {"the_burrrgh", 3000}, {"minnies_melodyland", 4000},
+      {"daisys_garden", 5000}, {"outdoor_zone", 6000}, {"goofy_speedway", 8000}, {"donalds_dreamland", 9000}};
+    std::string rel = ctxBuilt_ ? ctxDoc_.rel : doc.rel;
+    if (rel.find("_sz") != std::string::npos) for (auto &h : hoods) if (rel.find(h.first) != std::string::npos) zone = h.second;
+  }
+  npcRoot_ = host.attach_new_node("npc_spots (view only, never saved)");
+  auto label = [&](const std::string &txt, NodePath at, const LColor &c) {
+    NodePath top = host.get_top();
+    NodePath m = render::makeMarker(c, 1.0f); m.reparent_to(npcRoot_);
+    m.set_pos(top, at.get_pos(top)); m.set_h(top, at.get_h(top)); m.set_scale(0.7f, 0.7f, 1.8f);
+    PT(TextNode) tn = new TextNode("npc_label"); tn->set_text(txt); tn->set_align(TextNode::A_center);
+    tn->set_text_color(1, 1, 1, 1); tn->set_card_color(0.1f, 0.1f, 0.2f, 0.7f); tn->set_card_as_margin(0.2f, 0.2f, 0.1f, 0.1f);
+    NodePath t = npcRoot_.attach_new_node(tn); t.set_pos(top, at.get_pos(top) + LVector3(0, 0, 4.6f)); t.set_scale(top, 1.1f);
+    t.set_billboard_point_eye(); t.set_light_off(1); t.set_depth_write(false); t.set_bin("fixed", 40);
+    npcLabels_.push_back(txt); npcCount_++;
+  };
+  // Origins: model nodes named npc_origin_* plus DNA props named npc_* (e.g. TTC's DCS "npc_fisherman_origin_0"
+  // in fishing_pond_1, which DistributedNPCFisherman finds as **/npc_fisherman_origin_<posIndex>;+s).
+  std::vector<std::pair<std::string, NodePath>> origins; std::set<std::string> seen;
+  NodePathCollection o = host.find_all_matches("**/npc_*origin_*;+s");
+  for (int k = 0; k < o.get_num_paths(); k++) if (seen.insert(o.get_path(k).get_name()).second) origins.push_back({o.get_path(k).get_name(), o.get_path(k)});
+  const dna::Document &od = ctxBuilt_ ? ctxDoc_ : doc; const auto &on = ctxBuilt_ ? ctxScene_.itemNodes : scene.itemNodes;
+  for (size_t i = 0; i < od.items.size() && i < on.size(); i++)
+    if (od.items[i].name.rfind("npc_", 0) == 0 && od.items[i].name.find("origin") != std::string::npos && !on[i].is_empty() && seen.insert(od.items[i].name).second)
+      origins.push_back({od.items[i].name, on[i]});
+  std::vector<int> ids; if (zoneNpcs.count(zone)) ids = zoneNpcs[zone];
+  std::map<std::string, NodePath> byName; for (auto &[nm, n] : origins) byName[nm] = n;
+  NodePathCollection pp = host.find_all_matches("**/party_person_*;+s");
+  for (int k = 0; k < pp.get_num_paths(); k++) byName.emplace(pp.get_path(k).get_name(), pp.get_path(k));
+  std::set<std::string> used;
+  // Same lookup as the client: posIndex = index in sorted(zone2NpcDict[zone]) (NPCToons.createNpcsInZone), then
+  // fisherman -> npc_fisherman_origin_<i>, party person -> party_person_left/right (i even/odd), special quest
+  // giver -> npc_questgiver_origin_<i>, prize clerk -> npc_prizeclerk_origin_<i>, everyone -> npc_origin_<i>.
+  for (size_t i = 0; i < ids.size(); i++) {
+    int id = ids[i]; std::string ty = g_npcType.count(id) ? g_npcType[id] : "", I = std::to_string(i);
+    std::vector<std::string> cand;
+    if (ty == "NPC_FISHERMAN") cand = {"npc_fisherman_origin_" + I};
+    else if (ty == "NPC_PARTYPERSON") cand = {std::string("party_person_") + (i % 2 == 0 ? "left" : "right")};
+    else if (ty == "NPC_SPECIALQUESTGIVER") cand = {"npc_questgiver_origin_" + I, "npc_origin_" + I};
+    else cand = {"npc_origin_" + I, "npc_prizeclerk_origin_" + I};
+    for (auto &c : cand) if (byName.count(c)) {
+      label((names.count(id) ? names[id] : "NPC") + " (" + std::to_string(id) + ")  " + c, byName[c], ty == "NPC_PARTYPERSON" ? LColor(1.0f, 0.6f, 0.2f, 1) : LColor(0.3f, 0.9f, 1.0f, 1));
+      used.insert(c); break;
+    }
+  }
+  // origins in the scene that no NPC of this zone uses (grey; e.g. custom/unwired spots)
+  for (auto &[nm, n] : byName) if (!used.count(nm)) { npcUnused_.push_back(nm); if (showUnusedNpcs_) label(nm + "  (unused: no TTEX NPC)", n, LColor(0.6f, 0.6f, 0.6f, 1)); }
+  if (npcCount_) core::info(fmt("NPC spots: %d marker(s), zone %d (view only)", npcCount_, zone));
+}
+
+bool Editor::removeOverrideOpsFor(const std::string &code) {
+  std::string t = doc.text; auto com = ovComments(t); bool any = false;
+  std::regex el("<(hide|replace|recolor)\\b([^>]*?)/?>");
+  std::vector<std::pair<size_t, size_t>> cut;
+  for (std::sregex_iterator it(t.begin(), t.end(), el), end; it != end; ++it) {
+    if (ovInComment(com, (size_t)it->position(0))) continue;
+    std::string a = (*it)[2].str(), c = ovAttr(a, "code"), f = ovAttr(a, "find");
+    if (c != code && f != "**/=DNACode=" + code) continue;
+    size_t s0 = it->position(0), e0 = s0 + it->length(0);
+    while (s0 > 0 && (t[s0 - 1] == ' ' || t[s0 - 1] == '\t')) s0--;
+    if (e0 < t.size() && t[e0] == '\n') e0++;
+    cut.push_back({s0, e0});
+  }
+  for (auto r = cut.rbegin(); r != cut.rend(); ++r) { t.erase(r->first, r->second - r->first); any = true; }
+  if (!any) return false;
+  return editOverrideText(t, "Restore " + code);
+}
+
+bool Editor::replaceBaseWithCatalog(int ctxIdx, int ci) {
+  if (ctxIdx < 0 || ctxIdx >= (int)ctxDoc_.items.size() || ci < 0 || ci >= (int)catalog.size()) return false;
+  const std::string code = ctxDoc_.items[ctxIdx].code; const auto &e = catalog[ci];
+  if (code.empty()) return false;
+  // one replace per base code: drop an older replace/hide of the same code first (single undo step)
+  std::string t = doc.text; auto com = ovComments(t);
+  std::regex el("<(hide|replace)\\b([^>]*?)/?>"); std::vector<std::pair<size_t, size_t>> cut;
+  for (std::sregex_iterator it(t.begin(), t.end(), el), end; it != end; ++it) {
+    if (ovInComment(com, (size_t)it->position(0)) || ovAttr((*it)[2].str(), "code") != code) continue;
+    size_t s0 = it->position(0), e0 = s0 + it->length(0);
+    while (s0 > 0 && (t[s0 - 1] == ' ' || t[s0 - 1] == '\t')) s0--;
+    if (e0 < t.size() && t[e0] == '\n') e0++;
+    cut.push_back({s0, e0});
+  }
+  for (auto r = cut.rbegin(); r != cut.rend(); ++r) t.erase(r->first, r->second - r->first);
+  std::string line = "<replace code=\"" + code + "\" with_code=\"" + e.code + "\"";
+  if (!e.model.empty()) line += " model=\"" + e.model + "\"";
+  if (!e.node.empty()) line += " node=\"" + e.node + "\"";
+  line += "/>";
+  size_t g = t.rfind("</group>");
+  if (g == std::string::npos) {
+    size_t sc = t.rfind("</scene>"); if (sc == std::string::npos) return false;
+    std::string block = "\t<group name=\"override\" gate=\"" + std::string(ovGate_) + "\"";
+    if (std::string(ovGate_) == "holiday") block += " holidays=\"" + std::string(ovHolidays_) + "\"";
+    t.insert(sc, block + ">\n\t\t" + line + "\n\t</group>\n");
+  } else {
+    size_t ls = g; while (ls > 0 && (t[ls - 1] == ' ' || t[ls - 1] == '\t')) ls--;
+    t.insert(ls, "\t\t" + line + "\n");
+  }
+  if (!editOverrideText(t, "Replace " + code)) return false;
+  core::info("AODNA: replace " + code + " -> " + e.code + " (every " + code + " in the zone; Ctrl+S to save)");
+  return true;
+}
+
 bool Editor::injectOverrideOp(const std::string &tag, const std::string &code,
                               const std::string &extraAttrs) {
   if (code.empty() || doc.text.empty()) return false;
-  size_t pos = doc.text.rfind("</group>");
+  std::string text = doc.text;
+  size_t pos = text.rfind("</group>");
   if (pos == std::string::npos) {
     // No group yet: insert before </scene>
-    pos = doc.text.rfind("</scene>");
+    pos = text.rfind("</scene>");
     if (pos == std::string::npos) return false;
     std::string block = "\t<group name=\"override\" gate=\"" + std::string(ovGate_) + "\"";
     if (std::string(ovGate_) == "holiday")
@@ -806,15 +1231,14 @@ bool Editor::injectOverrideOp(const std::string &tag, const std::string &code,
     block += ">\n\t\t<" + tag + " code=\"" + code + "\"";
     if (!extraAttrs.empty()) block += " " + extraAttrs;
     block += "/>\n\t</group>\n";
-    doc.text.insert(pos, block);
+    text.insert(pos, block);
   } else {
     std::string line = "\t\t<" + tag + " code=\"" + code + "\"";
     if (!extraAttrs.empty()) line += " " + extraAttrs;
     line += "/>\n";
-    doc.text.insert(pos, line);
+    text.insert(pos, line);
   }
-  doc.textDirty = true;
-  overrideDirty_ = true;
+  if (!editOverrideText(text, "Override " + tag + " " + code)) return false;
   core::info("AODNA: queued <" + tag + " code=\"" + code + "\"> (save to write)");
   return true;
 }
@@ -1214,7 +1638,7 @@ void Editor::overridePanel() {
   ImGui::Begin("Appearance Override");
   ImGui::TextWrapped(
       "Opt-in holiday/appearance overlay. Normal DNA files never see this panel.\n"
-      "Add props: place from the Palette (parent_code attaches to a zone model).\n"
+      "Add props: place from the Palette (world/zone coordinates, like regular DNA).\n"
       "Hide / Replace / Recolor: select a prop or type its DNA code.");
   ImGui::Separator();
   ImGui::SetNextItemWidth(120);
@@ -1223,49 +1647,9 @@ void Editor::overridePanel() {
   ImGui::InputText("holidays", ovHolidays_, sizeof ovHolidays_);
   if (ImGui::Button("Apply gate")) setOverrideGate(ovGate_, ovHolidays_);
   ImGui::Separator();
-  ImGui::TextWrapped("ATTACH-TO-MODEL: new Palette places get parent_code below. "
-                     "Pos/hpr/scale are local to that DNA prop (e.g. gazebo).");
-  ImGui::SetNextItemWidth(180);
-  ImGui::InputText("parent_code", ovParentCode_, sizeof ovParentCode_);
-  ImGui::SameLine();
-  ImGui::SetNextItemWidth(140);
-  ImGui::InputText("parent_node", ovParentNode_, sizeof ovParentNode_);
-  if (ImGui::Button("Attach selected to parent_code") && !selection.empty() && ovParentCode_[0]) {
-    for (int i : selection) {
-      if (i < 0 || i >= (int)doc.items.size()) continue;
-      auto &it = doc.items[i];
-      if (it.node) {
-        doc.setNodeAttribute(it.node, "parent_code", ovParentCode_);
-        if (ovParentNode_[0])
-          doc.setNodeAttribute(it.node, "parent_node", ovParentNode_);
-        else
-          doc.setNodeAttribute(it.node, "parent_node", "");
-      } else if (!it.templateXml.empty()) {
-        // Unsaved add: rewrite opening tag attrs.
-        auto amp = it.templateXml.find('>');
-        if (amp != std::string::npos) {
-          std::string open = it.templateXml.substr(0, amp);
-          auto strip = [](std::string &s, const char *key) {
-            auto p = s.find(key);
-            if (p == std::string::npos) return;
-            auto q = s.find('"', p); if (q == std::string::npos) return;
-            auto r = s.find('"', q + 1); if (r == std::string::npos) return;
-            s.erase(p, r + 1 - p);
-          };
-          strip(open, "parent_code=");
-          strip(open, "parent_node=");
-          open += " parent_code=\"" + std::string(ovParentCode_) + "\"";
-          if (ovParentNode_[0])
-            open += " parent_node=\"" + std::string(ovParentNode_) + "\"";
-          it.templateXml = open + it.templateXml.substr(amp);
-        }
-      }
-      overrideDirty_ = true;
-    }
-    // Re-parse so attrs stick for next save of sourced items
-    if (doc.textDirty || overrideDirty_) { /* save will keep template attrs */ }
-    core::info("set parent_code=" + std::string(ovParentCode_) + " on selection");
-  }
+  // New override props are placed in plain world/zone coordinates like regular DNA props.
+  // Existing parent_code entries still load and render (scene.cpp); the editor no longer creates them.
+  ImGui::Separator();
   ImGui::Separator();
   ImGui::SetNextItemWidth(220);
   ImGui::InputText("code", ovCode_, sizeof ovCode_);
@@ -1304,6 +1688,32 @@ if (ImGui::Button("Use selected code") && !selection.empty()) {
                        std::string(ovRecolor_) + "\"";
       injectOverrideOp("recolor", c, ex);
     }
+  }
+  ImGui::Separator();
+  ImGui::TextDisabled("Replace a base prop / building (preview: %d swapped, %d hidden, %d recolored)", ovSwaps_, ovHidden_, ovRecolors_);
+  if (ovBase_ >= 0 && ovBase_ < (int)ctxDoc_.items.size()) {
+    const auto &b = ctxDoc_.items[ovBase_];
+    ImGui::Text("Base: %s  (%.1f, %.1f, %.1f)", b.code.c_str(), b.xf.x, b.xf.y, b.xf.z);
+    std::string with = previewIdx_ >= 0 && previewIdx_ < (int)catalog.size() ? catalog[previewIdx_].code : "";
+    ImGui::BeginDisabled(with.empty());
+    if (ImGui::Button(("Replace with " + (with.empty() ? std::string("(select a Palette item)") : with)).c_str())) replaceBaseWithCatalog(ovBase_, previewIdx_);
+    ImGui::EndDisabled();
+    ImGui::SameLine(); if (ImGui::Button("Hide##base")) injectOverrideOp("hide", b.code);
+    ImGui::SameLine(); if (ImGui::Button("Restore original")) removeOverrideOpsFor(b.code);
+    ImGui::TextDisabled("Applies to every %s in the zone (the game matches by DNA code).", b.code.c_str());
+  } else ImGui::TextDisabled("Click a playground prop or building in the 3D view, pick a Palette item, then Replace.");
+  {
+    ImGui::TextDisabled("Override entries (props are in the Objects list):");
+    const std::string &t = doc.text; auto com = ovComments(t);
+    std::regex el("<(hide|replace|recolor|effect)\\b[^>]*?/?>");
+    std::string removeCode; int k = 0;
+    for (std::sregex_iterator it(t.begin(), t.end(), el), end; it != end; ++it, ++k) {
+      if (ovInComment(com, (size_t)it->position(0))) continue;
+      std::string txt = it->str(0), tag = (*it)[1].str(), code = ovAttr(txt, "code");
+      if (tag != "effect" && !code.empty()) { ImGui::PushID(k); if (ImGui::SmallButton("x")) removeCode = code; ImGui::PopID(); ImGui::SameLine(); }
+      ImGui::TextUnformatted(txt.size() > 110 ? (txt.substr(0, 107) + "...").c_str() : txt.c_str());
+    }
+    if (!removeCode.empty()) removeOverrideOpsFor(removeCode);
   }
   ImGui::Separator();
   if (!ovFxLoaded_) loadOverrideEffectsFromDoc();
@@ -1470,6 +1880,9 @@ void Editor::menuBar() {
     ImGui::MenuItem("Palette", nullptr, &showPalette_);
     ImGui::MenuItem("Visgroups", nullptr, &showVisgroups_);
     ImGui::MenuItem("Inspector", nullptr, &showInspector_);
+    ImGui::MenuItem("Surface snap wall props", nullptr, &wallSnapOn);
+    if (ImGui::MenuItem("Show NPC spots (view only)", nullptr, showNpcs_)) { showNpcs_ = !showNpcs_; rebuildNpcMarkers(); }
+    if (ImGui::MenuItem("Show unused NPC nodes (dimmed)", nullptr, showUnusedNpcs_, showNpcs_)) { showUnusedNpcs_ = !showUnusedNpcs_; rebuildNpcMarkers(); }
     ImGui::MenuItem("Objects", nullptr, &showObjects_);
     ImGui::MenuItem("Prop preview", nullptr, &showPreview_);
     ImGui::MenuItem("Log", nullptr, &showLog_);
@@ -1480,12 +1893,12 @@ void Editor::menuBar() {
       ImGui::SetNextItemWidth(220);
       ImGui::SliderFloat("##wheel-speed", &wheelSpeed, 0.1f, 50.f, "%.1f ft", ImGuiSliderFlags_Logarithmic);
       if (ImGui::IsItemDeactivatedAfterEdit()) core::writeConfig("camera_wheel_speed", dna::fmtNum(wheelSpeed));
-      ImGui::TextDisabled("Hold Shift for fine scrolling.");
+      ImGui::TextDisabled("Minimum step. The wheel speeds up with distance to the point under the cursor.\nAlt+wheel: 5x faster. Shift+wheel: fine (nothing selected).");
       if (ImGui::MenuItem("Reset speed")) { wheelSpeed = 1.5f; core::writeConfig("camera_wheel_speed", "1.5"); }
       ImGui::EndMenu();
     }
     if (ImGui::MenuItem("Frame all", "Home")) frameAll();
-    if (ImGui::MenuItem("Frame selection", "F")) frameSelection();
+    if (ImGui::MenuItem("Frame selection / point under cursor", "F")) frameSelection();
     if (ImGui::MenuItem("Reset panel layout")) layoutDone_ = false;
     ImGui::MenuItem("Shortcuts", "F2", &showHelp_);
     ImGui::MenuItem("Input debug line", "F1", &showInputDebug_);
@@ -1519,7 +1932,11 @@ void Editor::shortcuts() {
     if (pr(ImGuiKey_X)) snap.on = !snap.on;
     if (pr(ImGuiKey_LeftBracket)) yawSelectedBy(io.KeyShift ? -90.f : -yawStep(), true);
     if (pr(ImGuiKey_RightBracket)) yawSelectedBy(io.KeyShift ? 90.f : yawStep(), true);
-    if (pr(ImGuiKey_F)) frameSelection();
+    if (pr(ImGuiKey_F)) {
+      ImVec2 m = io.MousePos; auto r = v3->rect();
+      bool over3D = m.x >= r.x && m.y >= r.y && m.x < r.x + r.w && m.y < r.y + r.h;
+      if (selection.empty() && over3D && focusCursor(m.x, m.y)) {} else frameSelection();
+    }
     if (pr(ImGuiKey_Home)) frameAll();
     if (pr(ImGuiKey_F1)) showInputDebug_ = !showInputDebug_;
     if (pr(ImGuiKey_F2)) showHelp_ = !showHelp_;
@@ -1545,6 +1962,8 @@ void Editor::dockLayout(unsigned id) {
   bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.22f, nullptr, &center);
   ImGuiID leftBottom = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.35f, nullptr, &left);
   ImGuiID rightBottom = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.55f, nullptr, &right);
+  // Appearance Override sits at the bottom of the right column, under Objects/Prop Preview.
+  ImGuiID overrideNode = ImGui::DockBuilderSplitNode(rightBottom, ImGuiDir_Down, 0.55f, nullptr, &rightBottom);
   ImGuiID mapNode = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.42f, nullptr, &center);
   ImGui::DockBuilderDockWindow("3D View", center);
   ImGui::DockBuilderDockWindow("2D Map", mapNode);
@@ -1555,6 +1974,7 @@ void Editor::dockLayout(unsigned id) {
   ImGui::DockBuilderDockWindow("Prop Preview", rightBottom);
   ImGui::DockBuilderDockWindow("Log", bottom);
   ImGui::DockBuilderDockWindow("Timings", bottom);
+  ImGui::DockBuilderDockWindow("Appearance Override", overrideNode);
   ImGui::DockBuilderFinish(id);
 }
 
@@ -1582,6 +2002,7 @@ void Editor::statusBar() {
 }
 
 void Editor::frame() {
+  if (!dropGhost_.is_empty() && dropGhostFrame_ < ImGui::GetFrameCount() - 1) dropGhost_.hide();
   hoveredView_ = "none";
   double t0 = core::nowMs();
   ImGuiViewport *vp = ImGui::GetMainViewport();
@@ -1606,7 +2027,8 @@ void Editor::frame() {
     ImGui::Begin("Palette", &showPalette_);
     if (showPalette_) {
       int clicked = ui::palettePanel(catalog, pal_, loadedCodes_);
-      if (clicked >= 0) { showPreview_ = true; openPreview(clicked); ImGui::SetWindowFocus("Prop Preview"); }
+      if (pal_.doubleClicked >= 0) { int ci = pal_.doubleClicked; pal_.doubleClicked = -1; showPreview_ = true; placeCatalog(ci); }
+      else if (clicked >= 0) { showPreview_ = true; openPreview(clicked); ImGui::SetWindowFocus("Prop Preview"); }
     }
     ImGui::End();
   }
@@ -1616,6 +2038,11 @@ void Editor::frame() {
   ImGui::Begin("Inspector", &showInspector_);
   if (showInspector_) {
   ImGui::BeginChild("insp-scroll");
+  if (!dna::fontSubstitutions().empty() && ImGui::CollapsingHeader(("Font substitutions (" + std::to_string(dna::fontSubstitutions().size()) + ")").c_str())) {
+    ImGui::TextDisabled("Fonts named by the DNA that aren't in our phase font folders:");
+    for (auto &s : dna::fontSubstitutions())
+      ImGui::BulletText("%s -> %s  (%s)", s.requested.c_str(), s.used.empty() ? "editor default" : s.used.c_str(), s.how.c_str());
+  }
   dna::Item *it = selection.size() == 1 ? &doc.items[selection[0]] : nullptr;
   if (selection.size() > 1) ImGui::TextDisabled("%d objects selected.\nThe gizmo moves the first. A drag moves all of them.", (int)selection.size());
   else {
@@ -1645,6 +2072,32 @@ void Editor::frame() {
       if (changed) {
         rebuildScene();
         it = selection.size() == 1 ? &doc.items[selection[0]] : nullptr;
+      }
+    }
+    // Appearance Override props: collision="none|box" (absent = the model's own collision solids).
+    if (it && !it->deleted && isAppearanceOverride() && it->kind == "prop") {
+      std::string cur = it->origId < 0 ? attrOfFirstTag(it->templateXml, "collision") : (it->node ? it->node->attr("collision") : "");
+      int sel = cur == "none" ? 1 : cur == "box" ? 2 : 0;
+      ImGui::SeparatorText("Collision");
+      int was = sel;
+      ImGui::RadioButton("Model", &sel, 0); ImGui::SameLine(); ImGui::RadioButton("None", &sel, 1); ImGui::SameLine(); ImGui::RadioButton("Box", &sel, 2);
+      ImGui::TextDisabled("Writes collision=\"none|box\" (Model = no attribute).");
+      if (sel != was) {
+        const char *v = sel == 1 ? "none" : sel == 2 ? "box" : "";
+        if (it->origId < 0) {
+          std::string nx = dropAttrsOfFirstTag(it->templateXml, {"collision"});
+          if (*v) { size_t p = nx.find("<prop"); if (p != std::string::npos) nx.insert(p + 5, std::string(" collision=\"") + v + "\""); }
+          auto c = std::make_unique<commands::TemplateCmd>(); c->id = selection[0]; c->before = it->templateXml; c->after = nx;
+          if (doc.setItemTemplate(c->id, nx)) history.pushApplied(std::move(c));
+        } else if (it->node) {
+          auto c = std::make_unique<commands::SourceCmd>(); c->before = doc.text; c->beforeDirty = doc.textDirty; c->what = "Set collision";
+          bool ok;
+          if (*v) ok = doc.setNodeAttribute(it->node, "collision", v);
+          else { std::string t = doc.text; size_t s0 = it->node->start, e0 = t.find('>', s0);
+                 std::string head = dropAttrsOfFirstTag(t.substr(s0, e0 - s0 + 1), {"collision"});
+                 ok = doc.replaceSource(s0, e0 + 1, head); }
+          if (ok) { c->after = doc.text; doc.textDirty = true; history.pushApplied(std::move(c)); rebuildScene(); it = &doc.items[selection[0]]; }
+        }
       }
     }
     if (r && it) {
@@ -1862,6 +2315,7 @@ void Editor::attachContext() {
 
 void Editor::rebuildContext() {
   detachContext();
+  ctxOvAdded_.clear(); ctxOvStashed_.clear(); ctxOvRecolored_.clear(); ovBase_ = -1;
   if (ctxBuilt_) { ctxScene_.clear(); ctxBuilt_ = false; }
   if (!ctxShow_ || !isAppearanceOverride() || !doc.root) return;
   std::string rel = ctxRel_.empty() ? render::hostDnaRelFor(doc) : ctxRel_;
@@ -1872,7 +2326,9 @@ void Editor::rebuildContext() {
   ctxDoc_ = std::move(d);
   auto st = dna::storagesForFile(resRoot, ctxDoc_.rel, ctxDoc_.text, nullptr);
   ctxStorage_.clear(); ctxStorage_.addFiles(st);
+  render::setTreasureHolidayFromFile(fs::path(doc.rel).filename().string());   // heal props: Halloween candy bucket
   ctxScene_.build(ctxDoc_, ctxStorage_);
+  render::setTreasureHolidayFromFile("");
   // The parent model already stands in the scene (solid/ghost attach parent): hide its context copy.
   int hidden = 0;
   for (size_t i = 0; i < ctxDoc_.items.size() && i < ctxScene_.itemNodes.size(); i++)
@@ -1881,10 +2337,15 @@ void Editor::rebuildContext() {
   // Never selectable: drop every editable-id tag so picks fall through to "nothing".
   auto tagged = ctxScene_.geom.find_all_matches("**/=eid");
   for (int k = 0; k < tagged.get_num_paths(); k++) tagged.get_path(k).clear_tag("eid");
+  for (size_t i = 0; i < ctxScene_.itemNodes.size(); i++)   // base-DNA picks for Replace / Hide in the override panel
+    if (!ctxScene_.itemNodes[i].is_empty()) ctxScene_.itemNodes[i].set_tag("ctxi", std::to_string(i));
   ctxScene_.geom.set_name("playground_context (not saved)");
   ctxBuilt_ = true;
   attachContext();
-  core::info(fmt("context: %s (%d objects, parent copy hidden: %d) - view only, never saved", rel.c_str(), (int)ctxDoc_.items.size(), hidden));
+  applyContextOverride();
+  rebuildNpcMarkers();
+  int swapped = ovSwaps_;
+  core::info(fmt("context: %s (%d objects, parent copy hidden: %d, override replace swaps: %d) - view only, never saved", rel.c_str(), (int)ctxDoc_.items.size(), hidden, swapped));
 }
 
 void Editor::setContextArea(const std::string &rel) {

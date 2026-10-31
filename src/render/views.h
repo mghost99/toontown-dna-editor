@@ -49,8 +49,10 @@ class Lighting {
   NodePath world_, amb_, sun_; NodePath fogNp_;
 };
 
-struct PickHit { int eid = -1; LPoint3 point; bool hit = false; float t = 1e30f; };
-PickHit pick(const View &v, float px, float py, NodePath root);
+struct PickHit { NodePath node; int eid = -1; LPoint3 point; LVector3 normal{0, 0, 1}; bool hit = false; float t = 1e30f; };
+// World-space ray cast against root (first visible hit, with surface normal).
+PickHit castRay(NodePath root, const LPoint3 &o, const LVector3 &d, float maxDist = 1e9f);
+PickHit pick(const View &v, float px, float py, NodePath root, NodePath skip = NodePath());
 bool rayPlaneZ(const LPoint3 &o, const LVector3 &d, float z, LPoint3 &out);
 
 }  // namespace render

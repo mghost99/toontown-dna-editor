@@ -238,12 +238,28 @@ int main(int argc, char **argv) {
     std::string bytes, error; CHECK(!dna::compilePdna(tree.get(), src, &bytes, &error));
     CHECK(error.find("baked sign geometry") != std::string::npos);
   }
-  {   // sign font codes: "humanist" is the Humanist face, never ImpressBT
+  {   // sign fonts resolve by short name from the phase font folders (shared by xml/dna/pdna)
+    fs::path root = fs::temp_directory_path() / "dna_tests_fonts"; fs::remove_all(root);
+    fs::create_directories(root / "phase_3/fonts");
+    for (auto f : {"Humanist.ttf", "ImpressBT.ttf", "Portago.ttf", "MickeyFontMaximum.bam", "MickeyFontStandard.bam", "MickeyFontClassic.bam", "MickeyFont.ttf"})
+      fclose(fopen((root / "phase_3/fonts" / f).string().c_str(), "w"));
+    std::vector<std::string> logged; dna::fontdetail::logSink() = [&](const std::string &m) { logged.push_back(m); };
+    dna::setFontRoots({root.string()});
     CHECK(dna::fallbackSignFontPath("humanist") == "phase_3/fonts/Humanist.ttf");
     CHECK(dna::fallbackSignFontName("humanist") == "Humanist");
     CHECK(dna::fallbackSignFontPath("impact") == "phase_3/fonts/ImpressBT.ttf");
     CHECK(dna::fallbackSignFontPath("DD_Portago") == "phase_3/fonts/Portago.ttf");
-    CHECK(dna::fallbackSignFontPath("unknowncode").empty());
+    CHECK(dna::resolveSignFont("SignFont") == "phase_3/fonts/MickeyFontMaximum.bam");
+    CHECK(dna::resolveSignFont("mickey") == "phase_3/fonts/MickeyFontMaximum.bam");
+    CHECK(dna::resolveSignFont("phase_3/models/fonts/MickeyFont") == "phase_3/fonts/MickeyFontMaximum.bam");
+    CHECK(dna::resolveSignFont("Mickey_Font_Standard.bam") == "phase_3/fonts/MickeyFontStandard.bam");
+    CHECK(dna::resolveSignFont("Mickey_Fnt") == "phase_3/fonts/MickeyFontMaximum.bam");
+    CHECK(dna::resolveSignFont("Humanst") == "phase_3/fonts/Humanist.ttf");
+    CHECK(dna::resolveSignFont("zzqqxx") == "phase_3/fonts/MickeyFontMaximum.bam");
+    bool noMatch = false; for (auto &s : dna::fontSubstitutions()) if (s.requested == "zzqqxx" && s.how == "no match -> default") noMatch = true;
+    CHECK(noMatch);
+    size_t n = logged.size(); dna::resolveSignFont("zzqqxx"); CHECK(logged.size() == n);   // logged once
+    fs::remove_all(root);
   }
   printf("%d/%d checks passed\n", checks - fails, checks);
   return fails ? 1 : 0;

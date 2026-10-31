@@ -78,6 +78,7 @@ int main(int argc, char **argv) {
   if (const char *pw = getenv("DNAED_PDNA_PASSWORD")) if (*pw) dna::setSessionPassword(pw);
   std::string res, file, selftest, snapPath; platform::Options o; int preSel = -1; int preOp = -1;
   bool doSave = false;
+  std::string placeTest; float aim[3] = {0, 0, 0}; bool haveAim = false; int placeSel = -1; std::string placeMode = "center"; float dropF[2] = {0.5f, 0.5f}; int snapSides = 8; bool snapSave = false; bool convertAttach = false; bool zoomTest = false; std::string moveTest; std::string ovBaseCode, ovWithCode; std::string collName, collVal;
   bool previewEffects = false, animateBats = false; float dpos[3] = {0, 0, 0}; bool haveDpos = false;
   float dscale = 0; bool haveDscale = false;
   std::string convIn, convOut; bool encryptOut = false;
@@ -97,6 +98,18 @@ int main(int argc, char **argv) {
     } else if (a == "--delta-scale" && i + 1 < argc) {
       haveDscale = sscanf(argv[++i], "%f", &dscale) >= 1;
     } else if (a == "--save") doSave = true;
+    else if (a == "--place-test" && i + 1 < argc) placeTest = argv[++i];   // scripted check: place CODE, print where it landed, exit (never saves)
+    else if (a == "--aim" && i + 1 < argc) haveAim = sscanf(argv[++i], "%f,%f,%f", &aim[0], &aim[1], &aim[2]) >= 2;
+    else if (a == "--place-near" && i + 1 < argc) placeSel = atoi(argv[++i]);
+    else if (a == "--snap-sides" && i + 1 < argc) { snapSides = atoi(argv[++i]); placeMode = "snap"; }
+    else if (a == "--snap-save") snapSave = true;
+    else if (a == "--zoom-test") zoomTest = true;
+    else if (a == "--ov-replace-test" && i + 2 < argc) { ovBaseCode = argv[++i]; ovWithCode = argv[++i]; }   // test copy only: replace BASE with palette WITH, undo/redo/restore
+    else if (a == "--move-test" && i + 1 < argc) moveTest = argv[++i];   // NAME: move via inspector path, step frames, report
+    else if (a == "--convert-attach") convertAttach = true;   // AODNA: parent_code props -> world-space (saves the file)
+    else if (a == "--set-collision" && i + 2 < argc) { collName = argv[++i]; collVal = argv[++i]; }   // test: NAME none|box
+    else if (a == "--place-mode" && i + 1 < argc) placeMode = argv[++i];   // center | double | drop3d | drop2d
+    else if (a == "--drop-at" && i + 1 < argc) sscanf(argv[++i], "%f,%f", &dropF[0], &dropF[1]);   // fraction of the view rect
     else if (a == "--snap-and-exit" && i + 1 < argc) snapPath = argv[++i];
     else if (a == "--preview-effects") previewEffects = true;
     else if (a == "--animate-bats") animateBats = true;
@@ -187,6 +200,151 @@ int main(int argc, char **argv) {
     ed.scene.syncItem(ed.doc, preSel);
     printf("(%.3f,%.3f,%.3f)\n", it.xf.sx, it.xf.sy, it.xf.sz);
   }
+  if (!ovBaseCode.empty()) {
+    for (int i = 0; i < 4; i++) app.step([&] { ed.frame(); });
+    auto rep = [&](const char *w) { printf("ov-test: %-16s swaps=%d hidden=%d recolors=%d undo=%d\n", w, ed.ovSwaps_, ed.ovHidden_, ed.ovRecolors_, (int)ed.history.size()); };
+    rep("open");
+    printf("ov-test: npc spots %d\n", ed.npcCount_); for (auto &l : ed.npcLabels_) printf("ov-test:   npc %s\n", l.c_str()); for (auto &l : ed.npcUnused_) printf("ov-test:   unused %s\n", l.c_str());
+    int base = -1; for (size_t i = 0; i < ed.ctxDoc_.items.size(); i++) if (ed.ctxDoc_.items[i].code == ovBaseCode) { base = (int)i; break; }
+    int ci = -1; for (size_t i = 0; i < ed.catalog.size(); i++) if (ed.catalog[i].code == ovWithCode) { ci = (int)i; break; }
+    for (size_t i = 0; i < ed.ctxDoc_.items.size(); i++) if (ed.ctxDoc_.items[i].code.find("prop_tree") == 0) printf("ov-test: tree %s (%.1f,%.1f,%.1f) swapped=%d\n", ed.ctxDoc_.items[i].code.c_str(), ed.ctxDoc_.items[i].xf.x, ed.ctxDoc_.items[i].xf.y, ed.ctxDoc_.items[i].xf.z, (int)ed.ctxScene_.itemNodes[i].is_stashed());
+    printf("ov-test: base %s idx %d, palette %s idx %d\n", ovBaseCode.c_str(), base, ovWithCode.c_str(), ci);
+    if (base < 0 || ci < 0) { app.close(); return 1; }
+    int fails = 0; NodePath bn = ed.ctxScene_.itemNodes[base];
+    if (!ed.replaceBaseWithCatalog(base, ci)) { printf("ov-test: replace FAILED\n"); fails++; }
+    app.step([&] { ed.frame(); }); rep("after replace");
+    printf("ov-test: base stashed=%d\n", (int)ed.ctxScene_.itemNodes[base].is_stashed()); if (!ed.ctxScene_.itemNodes[base].is_stashed()) fails++;
+    if (getenv("OV_CAM")) { float c[6]; if (sscanf(getenv("OV_CAM"), "%f,%f,%f,%f,%f,%f", &c[0], &c[1], &c[2], &c[3], &c[4], &c[5]) == 6) { ed.v3->target = LPoint3(c[0], c[1], c[2]); ed.v3->dist = c[3]; ed.v3->yaw = c[4]; ed.v3->pitch = c[5]; ed.v3->apply(); } }
+    if (getenv("OV_SNAP")) { for (int i = 0; i < 6; i++) app.step([&] { ed.frame(); }); app.screenshot(getenv("OV_SNAP")); }
+    ed.history.undo(ed.doc); app.step([&] { ed.frame(); }); rep("after undo");
+    if (ed.ctxScene_.itemNodes[base].is_stashed() && ovBaseCode.find("tree") == std::string::npos) fails++;
+    ed.history.redo(ed.doc); app.step([&] { ed.frame(); }); rep("after redo");
+    if (!ed.removeOverrideOpsFor(ovBaseCode)) fails++;
+    app.step([&] { ed.frame(); }); rep("after restore");
+    printf("ov-test: base stashed after restore=%d\n", (int)ed.ctxScene_.itemNodes[base].is_stashed()); if (ed.ctxScene_.itemNodes[base].is_stashed()) fails++;
+    if (getenv("OV_SAVE_COPY")) { ed.history.undo(ed.doc); printf("ov-test: save copy -> %d\n", (int)ed.doc.save(nullptr, nullptr, getenv("OV_SAVE_COPY"))); }
+    printf("ov-test: %s (%d failure(s))\n", fails ? "FAIL" : "OK", fails);
+    app.close(); return fails ? 1 : 0;
+  }
+  if (!moveTest.empty()) {
+    if (previewEffects) ed.setPreviewEffects(true);
+    for (int i = 0; i < 4; i++) app.step([&] { ed.frame(); });
+    printf("move-test: dirty after open=%d textDirty=%d undo=%d\n", (int)ed.doc.dirty(), (int)ed.doc.textDirty, (int)ed.history.size());
+    int id = -1; for (size_t i = 0; i < ed.doc.items.size(); i++) if (ed.doc.items[i].name == moveTest || ed.doc.items[i].code == moveTest) id = (int)i;
+    if (id < 0) { printf("move-test: no item\n"); app.close(); return 1; }
+    ed.selection = {id};
+    auto &it = ed.doc.items[id]; NodePath np = ed.scene.itemNodes[id];
+    auto show = [&](const char *w) { LPoint3 p = np.get_pos(ed.scene.geom); printf("move-test: %-14s xf (%.2f,%.2f,%.2f) node (%.2f,%.2f,%.2f) parent %s\n", w, it.xf.x, it.xf.y, it.xf.z, p[0], p[1], p[2], np.get_parent().get_name().c_str()); };
+    show("start");
+    { LPoint3 a, b; bool ok = np.calc_tight_bounds(a, b, ed.scene.world);
+      printf("move-test: bounds ok=%d (%.2f,%.2f,%.2f)-(%.2f,%.2f,%.2f) children %d\n", ok, a[0], a[1], a[2], b[0], b[1], b[2], np.get_num_children());
+      ed.frameSelection(); ed.v3->apply(); float x = -1, y = -1; bool pj = ed.v3->project(np.get_pos(ed.scene.world), x, y);
+      LPoint3 c = ed.v3->cam.get_pos(ed.scene.world);
+      printf("move-test: framed target (%.2f,%.2f,%.2f) dist %.2f cam (%.2f,%.2f,%.2f) project=%d (%.0f,%.0f)\n", ed.v3->target[0], ed.v3->target[1], ed.v3->target[2], ed.v3->dist, c[0], c[1], c[2], pj, x, y); }
+    ed.beginEdit(); dna::Xform x = it.xf; x.x += 5; x.z += 2; it.xf = x; ed.scene.syncItem(ed.doc, id); ed.endEdit("Edit");
+    show("inspector +5x");
+    for (int i = 0; i < 30; i++) app.step([&] { ed.frame(); });
+    show("after 30 frames");
+    ed.moveSelectedBy(LVector3(0, 3, 0), true);
+    show("move +3y");
+    for (int i = 0; i < 30; i++) app.step([&] { ed.frame(); });
+    show("after 30 frames");
+    app.close(); return 0;
+  }
+  if (zoomTest) {   // wheel step vs camera height, and F focus (offscreen)
+    for (int i = 0; i < 4; i++) app.step([&] { ed.frame(); });
+    auto r = ed.v3->rect(); float cx = r.x + r.w * 0.5f, cy = r.y + r.h * 0.5f;
+    for (float d : {20.f, 100.f, 400.f, 1500.f}) {
+      ed.v3->target = LPoint3(0, 0, 0); ed.v3->dist = d; ed.v3->pitch = -60; ed.v3->apply();
+      LPoint3 a = ed.v3->target; float n = ed.wheelZoom(cx, cy, 1, false, false); float f = (ed.v3->target = a, ed.v3->apply(), ed.wheelZoom(cx, cy, 1, true, false));
+      ed.v3->target = a; ed.v3->apply(); float fi = ed.wheelZoom(cx, cy, 1, false, true);
+      int notches = 0; ed.v3->target = a; ed.v3->apply();
+      LPoint3 cam0 = ed.v3->cam.get_pos(ed.scene.world); float h0 = cam0[2];
+      while (notches < 200) { ed.v3->apply(); if (ed.v3->cam.get_pos(ed.scene.world)[2] < 10) break; ed.wheelZoom(cx, cy, 1, false, false); notches++; }
+      printf("zoom-test: cam height %.0f: notch %.2f ft, Alt %.2f, Shift %.2f; notches to reach 10 ft: %d\n", h0, n, f, fi, notches);
+    }
+    ed.selection.clear(); ed.v3->target = LPoint3(0, 0, 0); ed.v3->dist = 800; ed.v3->apply();
+    bool ok = ed.focusCursor(cx, cy);
+    printf("zoom-test: F focus (nothing selected) ok=%d -> target (%.1f,%.1f,%.1f) dist %.0f\n", ok, ed.v3->target[0], ed.v3->target[1], ed.v3->target[2], ed.v3->dist);
+    app.close(); return 0;
+  }
+  if (convertAttach) {
+    for (int i = 0; i < 4; i++) app.step([&] { ed.frame(); });
+    std::string log; int n = ed.convertAttachToWorld(&log);
+    printf("%sconvert-attach: %d converted\n", log.c_str(), n);
+    if (snapPath.empty()) { app.close(); return n < 0; }
+  }
+  if (!collName.empty()) {
+    int n = 0;
+    for (size_t i = 0; i < ed.doc.items.size(); i++) if (ed.doc.items[i].name == collName && ed.doc.items[i].node) {
+      n += ed.doc.setNodeAttribute(ed.doc.items[i].node, "collision", collVal); break; }
+    printf("set-collision %s=%s: %d\n", collName.c_str(), collVal.c_str(), n);
+    if (n) { ed.doc.textDirty = true; bool ok = ed.save(""); printf("save %s\n", ok ? "ok" : "FAILED"); }
+    app.close(); return n ? 0 : 1;
+  }
+  if (!placeTest.empty()) {
+    for (int i = 0; i < 4; i++) app.step([&] { ed.frame(); });
+    if (haveAim) { ed.v3->target = LPoint3(aim[0], aim[1], aim[2]); ed.v3->apply(); }
+    for (int i = 0; i < 2; i++) app.step([&] { ed.frame(); });
+    if (placeSel >= 0 && placeSel < (int)ed.doc.items.size()) ed.selection = {placeSel}; else ed.selection.clear();
+    int ci = -1; for (int i = 0; i < (int)ed.catalog.size(); i++) if (ed.catalog[i].code == placeTest) { ci = i; break; }
+    if (ci < 0 && placeMode != "snap") { printf("place-test: code %s not in palette\n", placeTest.c_str()); app.close(); return 1; }
+    int id = -1; float dpx = 0, dpy = 0;
+    if (placeMode == "snap") {   // surface-snap test: ray in from each side of the gazebo
+      NodePath gz = ed.hostProp("prop_gazebo");
+      if (!gz.is_empty() && !gz.find("aodna_parent_ghost").is_empty()) gz = gz.find("aodna_parent_ghost");
+      if (!gz.is_empty()) ed.snapRoot = gz;
+      if (gz.is_empty()) { printf("snap-test: no gazebo\n"); app.close(); return 1; }
+      LPoint3 mn, mx; gz.calc_tight_bounds(mn, mx, ed.scene.geom);
+      LPoint3 c = (mn + mx) * 0.5f; float R = std::max(mx[0] - mn[0], mx[1] - mn[1]);
+      float zc = std::atof(getenv("SNAP_Z") ? getenv("SNAP_Z") : "-1") >= 0 ? std::atof(getenv("SNAP_Z")) : mn[2] + (mx[2] - mn[2]) * 0.35f;
+      float a0 = getenv("SNAP_A0") ? std::atof(getenv("SNAP_A0")) : 0.f;
+      printf("snap-test: gazebo bounds (%.2f,%.2f,%.2f)-(%.2f,%.2f,%.2f) ray z %.2f\n", mn[0], mn[1], mn[2], mx[0], mx[1], mx[2], zc);
+      std::vector<std::string> codes; { std::string cs = placeTest; size_t p; while ((p = cs.find(',')) != std::string::npos) { codes.push_back(cs.substr(0, p)); cs = cs.substr(p + 1); } codes.push_back(cs); }
+      int okN = 0;
+      for (int k = 0; k < snapSides; k++) {
+        float ang = (a0 + 360.f * k / snapSides) * float(M_PI) / 180.f; LVector3 dir(std::cos(ang), std::sin(ang), 0);
+        LPoint3 o(c[0] + dir[0] * R, c[1] + dir[1] * R, zc);
+        render::PickHit h = render::castRay(gz, o, -dir);
+        const std::string &code = codes[k % codes.size()];
+        int cj = -1; for (int i = 0; i < (int)ed.catalog.size(); i++) if (ed.catalog[i].code == code) cj = i;
+        if (cj < 0) { printf("snap-test: %s not in palette\n", code.c_str()); continue; }
+        ed.openPreview(cj);
+        dna::Xform xf; std::string why; bool ok = ed.wallSnap(h, xf, &why);
+        printf("snap-test: side %d ang %.0f hit=%d eid=%d pt (%.2f,%.2f,%.2f) %s %s\n", k, ang * 180 / M_PI, (int)h.hit, h.eid, h.point[0], h.point[1], h.point[2], ok ? "SNAP" : "FAIL", why.c_str());
+        if (ok) {
+          int nid = ed.placePreviewed(nullptr, &xf); okN++;
+          printf("snap-test:   placed %s pos (%.2f,%.2f,%.2f) hpr (%.1f,%.1f,%.1f) scale %.3f id %d\n", code.c_str(), xf.x, xf.y, xf.z, xf.h, xf.p, xf.r, xf.sx, nid);
+        }
+      }
+      printf("snap-test: %d/%d sides snapped\n", okN, snapSides);
+      if (!snapPath.empty()) {
+        ed.selection.clear(); if (previewEffects) ed.setPreviewEffects(true);
+        ed.v3->target = c; if (getenv("SNAP_DIST")) ed.v3->dist = std::atof(getenv("SNAP_DIST"));
+        if (getenv("SNAP_YAW")) ed.v3->yaw = std::atof(getenv("SNAP_YAW")); if (getenv("SNAP_PITCH")) ed.v3->pitch = std::atof(getenv("SNAP_PITCH"));
+        ed.v3->apply();
+        for (int i = 0; i < 48; i++) app.step([&] { ed.frame(); });
+        app.screenshot(snapPath);
+        printf("snap-test: screenshot %s\n", snapPath.c_str());
+      }
+      if (snapSave) { bool sv = ed.save(""); printf("snap-test: save %s\n", sv ? "ok" : "FAILED"); }
+      app.close(); return okN ? 0 : 1;
+    }
+    if (placeMode == "drop3d" || placeMode == "drop2d") {
+      render::View &v = placeMode == "drop3d" ? *ed.v3 : *ed.v2; auto r = v.rect();
+      dpx = r.x + r.w * dropF[0]; dpy = r.y + r.h * dropF[1];
+      id = ed.dropCatalog(ci, v, dpx, dpy);
+    } else if (placeMode == "double") id = ed.placeCatalog(ci);           // palette double-click path
+    else { ed.openPreview(ci); id = ed.placePreviewed(); }                // Place in scene button
+    printf("place-test: mode %s drop pixel (%.0f,%.0f)\n", placeMode.c_str(), dpx, dpy);
+    if (id < 0) { printf("place-test: nothing placed\n"); app.close(); return 1; }
+    app.step([&] { ed.frame(); });
+    auto &it = ed.doc.items[id]; LPoint3 w = ed.scene.itemNodes[id].get_pos(ed.scene.geom);
+    printf("place-test: aim (%.2f,%.2f,%.2f) -> item xf (%.2f,%.2f,%.2f) world (%.2f,%.2f,%.2f) selected=%d undoable=%d\n",
+           ed.v3->target[0], ed.v3->target[1], ed.v3->target[2], it.xf.x, it.xf.y, it.xf.z, w[0], w[1], w[2],
+           (int)(ed.selection.size() == 1 && ed.selection[0] == id), (int)ed.history.canUndo());
+    app.close(); return 0;
+  }
   if (doSave) {
     bool ok = ed.save("");
     printf("save %s\n", ok ? "ok" : "FAILED");
@@ -257,14 +415,14 @@ int main(int argc, char **argv) {
     auto original = ed.v3->target;
     io.AddMouseWheelEvent(0, 0.1f); frames(2);
     float travel = (ed.v3->target - original).length();
-    bool fine = std::fabs(travel - ed.wheelSpeed * 0.1f) < 0.02f;
-    rep << "fractional wheel travel: " << travel << " ft, expected " << ed.wheelSpeed * 0.1f << "\n";
+    bool fine = std::fabs(travel - ed.lastWheelBase_ * 0.1f) < 0.02f + ed.lastWheelBase_ * 0.01f;
+    rep << "fractional wheel travel: " << travel << " ft, expected " << ed.lastWheelBase_ * 0.1f << "\n";
     if (!fine) ++fails;
     float distance = ed.v3->dist; ed.v3->dist = 10000;
     original = ed.v3->target;
     io.AddMouseWheelEvent(0, 0.1f); frames(2);
     travel = (ed.v3->target - original).length();
-    if (std::fabs(travel - ed.wheelSpeed * 0.1f) > 0.02f) ++fails;
+    if (std::fabs(travel - ed.lastWheelBase_ * 0.1f) > 0.02f + ed.lastWheelBase_ * 0.01f) ++fails;
     ed.v3->dist = distance; ed.frameAll();
   }
   std::vector<std::string> files = {"phase_4/dna/toontown_central_sz.xml", "phase_5/dna/toontown_central_2100.xml"};
@@ -303,6 +461,13 @@ int main(int argc, char **argv) {
     ed.setLight(render::LightMode::CogMood); shot(tag + "_cogmood"); ed.setLight(render::LightMode::Game);
     // select: click the 3D view where an object projects
     int target = -1; float tx = 0, ty = 0;
+    if (const char *tn = getenv("DNAED_SELFTEST_TARGET")) {   // force a named item (framed first)
+      for (int i = (int)ed.doc.items.size() - 1; i >= 0 && target < 0; i--) if (ed.doc.items[i].name == tn) {
+        ed.select({i}); ed.frameSelection(); ed.select({}); frames(2);
+        LPoint3 a, b; ed.scene.itemNodes[i].calc_tight_bounds(a, b, ed.scene.world); float x, y;
+        if (ed.v3->project((a + b) * 0.5f, x, y)) { target = i; tx = x; ty = y; int e = ed.pickAt3D(x, y); rep << "forced target " << i << " pick -> " << e << "\n"; }
+      }
+    }
     for (int i = 0; i < (int)ed.doc.items.size() && target < 0; i++) {
       auto &it = ed.doc.items[i]; if (it.nested || it.kind == "treasure_spawn") continue;
       LPoint3 a, b; NodePath n = ed.scene.itemNodes[i];
@@ -337,7 +502,8 @@ int main(int argc, char **argv) {
       rep << "2D drag: item now at " << ed.doc.items[sel].xf.x << "," << ed.doc.items[sel].xf.y << "\n"; shot(tag + "_drag2d"); }
     // gizmo: W translate along X, E rotate, R scale -- real mouse drags on the ImGuizmo handles
     for (int op = 1; op <= 3; op++) {
-      ed.select({sel}); ed.gizmoOp = (render::GizmoOp)op; frames(2); if (op == 1) shot(tag + "_gizmo_shown");
+      ed.select({sel}); if (getenv("DNAED_SELFTEST_TARGET")) { ed.frameSelection(); ed.v3->dist = 40; ed.v3->apply(); }
+      ed.gizmoOp = (render::GizmoOp)op; frames(2); if (op == 1) shot(tag + "_gizmo_shown");
       auto b4 = ed.doc.items[sel].xf; NodePath n = ed.scene.itemNodes[sel];
       float ox, oy, ax, ay; LPoint3 o = n.get_pos(ed.scene.world);
       ed.v3->project(o, ox, oy); ed.v3->project(o + LVector3(1, 0, 0) * (ed.v3->dist * 0.05f), ax, ay);

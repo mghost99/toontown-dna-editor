@@ -12,6 +12,7 @@
 #include "compress_string.h"
 #include "textNode.h"
 #include "fontPool.h"
+#include "config_putil.h"
 #include "bamFile.h"
 #include "cardMaker.h"
 #include "transparencyAttrib.h"
@@ -56,6 +57,42 @@ namespace fs = std::filesystem;
 // Host playground DNA for Appearance Override files (parent_code world xform).
 static std::string g_hostOverride;   // View > Context area (empty = zone default)
 void setHostDnaOverride(const std::string &rel) { g_hostOverride = rel; }
+
+// ---- heal (treasure) spawn preview: same models as toontown/safezone/TreasureGlobals.py ----
+static bool g_treasureHalloween = false;
+void setTreasureHolidayFromFile(const std::string &fileName) {
+  std::string f = fileName; for (auto &c : f) c = (char)tolower((unsigned char)c);
+  g_treasureHalloween = f.find("halloween") != std::string::npos;
+}
+static NodePath makeTreasureModel(const std::string &type, assets::Storage &st) {
+  struct T { const char *code, *path; };
+  static const std::map<std::string, T> kT = {
+      {"TT", {"treasure_icecream", "phase_4/models/props/icecream"}},
+      {"ANY", {"treasure_icecream", "phase_4/models/props/icecream"}},
+      {"DD", {"treasure_starfish", "phase_6/models/props/starfish_treasure"}},
+      {"DG", {"treasure_flower", "phase_8/models/props/flower_treasure"}},
+      {"BR", {"treasure_snowflake", "phase_8/models/props/snowflake_treasure"}},
+      {"MM", {"treasure_music", "phase_6/models/props/music_treasure"}},
+      {"DL", {"treasure_zzz", "phase_8/models/props/zzz_treasure"}},
+      {"OZ", {"treasure_acorn", "phase_6/models/props/acorn_treasure"}},
+      {"E", {"treasure_popsicle", "phase_5.5/models/props/popsicle_treasure"}},
+      {"PP", {"treasure_pp_chip", "phase_8/models/props/pp_chip_treasure"}}};
+  auto it = kT.find(type.empty() ? std::string("TT") : type);
+  const T &t = it == kT.end() ? kT.at("TT") : it->second;
+  bool bucket = g_treasureHalloween && t.path == std::string("phase_4/models/props/icecream");
+  NodePath src;
+  if (bucket) src = assets::ModelCache::get().load("phase_4/models/props/candy_bucket_v3");
+  if (src.is_empty() && st.hasCode(t.code)) src = st.findNode(t.code);
+  if (src.is_empty()) src = assets::ModelCache::get().load(t.path);
+  NodePath holder("treasure_model");
+  if (src.is_empty()) { makeMarker(LColor(1.0f, 0.85f, 0.1f, 1), 1.2f).reparent_to(holder); return holder; }
+  src.copy_to(holder);
+  // DistributedTreasure: nodePath scale 0.9, billboard point-eye (flat cards); bucket model scale 0.85.
+  holder.set_scale(bucket ? 0.9f * 0.85f : 0.9f);
+  if (!bucket) holder.set_billboard_point_eye();
+  return holder;
+}
+
 std::string hostDnaRelFor(const dna::Document &doc);
 static std::string hostDnaRel(const dna::Document &doc) {
   if (!g_hostOverride.empty()) return g_hostOverride;
@@ -254,40 +291,30 @@ static bool hasEditableDesc(const dna::XmlNode *n) {
   bool f = false; dna::walk(n, [&](const dna::XmlNode *c) { if (dna::kEditable.count(c->tag)) f = true; }); return f;
 }
 
-// Sign fonts come from the store_font entries of the loaded storage files, exactly as the game
-// resolves them. A built-in path is used only for codes no storage declares, and always with a warning.
+// Sign fonts: the storage store_font entry (if any) names the font, otherwise the code itself does.
+// Either way the name goes through dna::resolveSignFont(), the one short-name lookup shared by
+// .xml, .dna and .pdna (all three parse into the same node tree that reaches this function).
 static PT(TextFont) signFont(const std::string &code, assets::Storage &st) {
   if (code.empty()) return TextNode::get_default_font();
-  static std::set<std::string> warned;
-  auto warnOnce = [](const std::string &m) { if (warned.insert(m).second) core::warn(m); };
-  auto lastResort = []() -> PT(TextFont) {
-    PT(TextFont) f = FontPool::load_font("phase_3/fonts/MickeyFont.bam");
-    if (f && f->is_valid()) return f;
-    return TextNode::get_default_font();
-  };
+  static bool rooted = false;
+  if (!rooted) {
+    rooted = true; std::vector<std::string> roots;
+    const DSearchPath &mp = get_model_path().get_value();
+    for (size_t i = 0; i < mp.get_num_directories(); ++i) roots.push_back(mp.get_directory(i).to_os_specific());
+    dna::fontdetail::logSink() = [](const std::string &m) { core::warn(m); };
+    dna::setFontRoots(roots);
+  }
+  static std::map<std::string, PT(TextFont)> loaded;
   std::string declared = st.fontPath(code);
-  if (!declared.empty()) {
-    // Storage paths may omit the extension ("phase_3/fonts/MickeyFont"); the game then loads it
-    // with its default model extension (.bam in Clash, .egg in stock Panda3D), so try both.
-    std::vector<std::string> candidates = {declared};
-    if (Filename(declared).get_extension().empty()) { candidates.push_back(declared + ".bam"); candidates.push_back(declared + ".egg"); }
-    for (auto &path : candidates) {
-      PT(TextFont) f = FontPool::load_font(path);
-      if (f && f->is_valid()) return f;
-    }
-    warnOnce("font code '" + code + "' is declared as " + declared + " in storage, but that file could not be loaded; using the last-resort font");
-    return lastResort();
-  }
-  std::string path = dna::fallbackSignFontPath(code);
-  if (path.empty()) {
-    warnOnce("font code '" + code + "' has no store_font entry in the loaded storage and no built-in mapping; using the last-resort font");
-    return lastResort();
-  }
-  warnOnce("font code '" + code + "' has no store_font entry in the loaded storage; using built-in " + path);
-  PT(TextFont) f = FontPool::load_font(path);
-  if (f && f->is_valid()) return f;
-  warnOnce("built-in font " + path + " for code '" + code + "' could not be loaded; using the last-resort font");
-  return lastResort();
+  std::string key = declared.empty() ? code : declared;
+  auto c = loaded.find(key); if (c != loaded.end()) return c->second;
+  PT(TextFont) f;
+  std::string path = dna::resolveSignFont(key);
+  if (path.empty() && !declared.empty()) path = dna::resolveSignFont(code);
+  if (!path.empty()) f = FontPool::load_font(path);
+  if (!f || !f->is_valid()) { core::warn("font '" + key + "' could not be loaded from " + path + "; using the editor default font"); f = TextNode::get_default_font(); }
+  loaded[key] = f;
+  return f;
 }
 
 // Baseline dimensions are diameters in world units. Glyph scales belong to the
@@ -494,7 +521,7 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
     if (!origin.is_empty()) np.set_transform(origin.get_transform(parent));
   } else if (t == "treasure_spawn") {
     np = parent.attach_new_node("treasure_spawn");
-    NodePath m = makeMarker(LColor(1.0f, 0.85f, 0.1f, 1), 1.2f); m.reparent_to(np);
+    makeTreasureModel(n->attr("type"), st).reparent_to(np);
   } else if (t == "sign") {   // placed at the building's sign_origin; the sign's own pos/hpr/scale are relative to it
     NodePath origin = parent.find("**/sign_origin");   // look up before adding our own node
     if (origin.is_empty()) origin = parent.find("**/*sign_origin*");
@@ -522,8 +549,8 @@ void Scene::gen(const dna::XmlNode *n, NodePath parent, const std::string &src, 
     if (!n->child("text_geom")) typesetBaseline(np, n, src, st);
   } else if (t == "text_geom" || t == "text" || t == "graphic" || t == "title" || t == "texture" ||
              t == "battle_cell" || t == "suit_edge" || t == "store_suit_point" || t == "curve_point" ||
-             t == "prop_list") {
-    return;   // gameplay data or sign text: not drawn in the editor
+             t == "prop_list" || t == "replace" || t == "hide" || t == "recolor" || t == "effect") {
+    return;   // gameplay data / override ops (previewed on the playground context by the editor)
   } else if (t == "scene" || t == "#doc") {
     np = parent;
   } else {
