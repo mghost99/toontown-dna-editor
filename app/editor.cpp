@@ -1060,6 +1060,24 @@ void Editor::applyContextOverride() {
     if (src.is_empty() && with != code && storage_.hasCode(with)) src = storage_.findNode(with);
     if (src.is_empty() && with != code) for (auto &e : catalog) if (e.code == with) { src = assets::loadStoreNode(e.model, e.node); break; }
     if (src.is_empty()) { static std::set<std::string> warned; if (warned.insert(with).second) core::warn("override preview: no model for replace with_code " + with); continue; }
+    std::string part = ovAttr(a, "part");
+    if (part == "geometry") {
+      // Geometry-only swap (matches AppearanceOverride part="geometry"): keep the target node, its
+      // collisions and locators; stash its visible geometry and parent the source's geometry under it.
+      NodePath sg = src.find("**/geometry"); if (sg.is_empty()) sg = src;
+      for (int i : targets) {
+        NodePath base = ctxScene_.itemNodes[i];
+        NodePath bg = base.find("**/geometry");
+        NodePathCollection olds;
+        if (!bg.is_empty()) olds.add_path(bg); else olds = base.find_all_matches("**/+GeomNode");
+        NodePath cp = sg.copy_to(base);
+        cp.set_transform(sg == src ? TransformState::make_identity() : sg.get_transform(src));
+        cp.set_name("geometry_" + with + " (override part=geometry of " + code + ")");
+        for (int k = 0; k < olds.get_num_paths(); k++) { NodePath o = olds.get_path(k); o.stash(); ctxOvStashed_.push_back(o); }
+        ctxOvAdded_.push_back(cp); ovSwaps_++;
+      }
+      continue;
+    }
     for (int i : targets) {
       NodePath base = ctxScene_.itemNodes[i];
       NodePath cp = src.copy_to(base.get_parent());
